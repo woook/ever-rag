@@ -75,7 +75,7 @@ def scan_files(source_dir: str) -> dict[str, list[str]]:
                 if os.path.getsize(path) >= MIN_IMAGE_SIZE_BYTES:
                     files["image"].append(path)
     # Newest images first
-    files["image"].sort(key=lambda p: os.path.getctime(p), reverse=True)
+    files["image"].sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files
 
 

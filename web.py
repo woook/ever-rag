@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Web frontend for the personal knowledge base RAG tool."""
 
+import os
 import time
 
 import chromadb
@@ -21,8 +22,12 @@ app = Flask(__name__)
 print("Loading embedding model...")
 embed_model = SentenceTransformer(EMBEDDING_MODEL)
 client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-collection = client.get_collection(COLLECTION_NAME)
-print(f"Index loaded: {collection.count()} chunks")
+try:
+    collection = client.get_collection(COLLECTION_NAME)
+    print(f"Index loaded: {collection.count()} chunks")
+except Exception:
+    print("Warning: No index found. Run index.py first. Searches will fail.")
+    collection = None
 
 SYSTEM_PROMPT = (
     "Answer the question using only the provided context. "
@@ -164,10 +169,15 @@ def index():
         query = request.form.get("query", "").strip()
         src_filter = request.form.get("src_filter", "")
         content_type = request.form.get("content_type", "")
-        top_k = int(request.form.get("top_k", 5))
+        try:
+            top_k = int(request.form.get("top_k", 5))
+        except (ValueError, TypeError):
+            top_k = 5
         no_llm = bool(request.form.get("no_llm"))
 
-        if query:
+        if query and collection is None:
+            answer = "No index found. Run index.py first."
+        elif query:
             t0 = time.time()
 
             # Build filter
@@ -222,4 +232,4 @@ def index():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=os.environ.get("FLASK_DEBUG", "0") == "1")
