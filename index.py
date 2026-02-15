@@ -59,7 +59,7 @@ def clean_markdown(text: str) -> str:
 def file_id(path: str, suffix: str = "") -> str:
     """Stable ID prefix for a file based on its path and optional suffix."""
     key = path + suffix
-    return hashlib.md5(key.encode()).hexdigest()[:12]
+    return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def scan_files(source_dir: str) -> dict[str, list[str]]:
@@ -226,8 +226,11 @@ def main():
         try:
             client.delete_collection(COLLECTION_NAME)
             print("Deleted existing collection.")
-        except Exception:
-            pass
+        except (ValueError, Exception) as e:
+            if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                pass  # collection doesn't exist yet
+            else:
+                raise
 
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -301,6 +304,7 @@ def main():
                        if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
             print(f"\n  Images ({vision_model}): {len(new_img)} new (skipping {len(files['image']) - len(new_img)} already indexed)")
             buffer = []
+            images_t0 = time.time()
             for i, path in enumerate(new_img, 1):
                 buffer.extend(process_image(path, source_name, vision_model))
                 # Flush more frequently for images since each one is slow
@@ -308,7 +312,7 @@ def main():
                     store_chunks(buffer, collection, model)
                     total_new += len(buffer)
                     buffer = []
-                    elapsed = time.time() - t0
+                    elapsed = time.time() - images_t0
                     rate = i / elapsed if elapsed > 0 else 0
                     remaining = (len(new_img) - i) / rate if rate > 0 else 0
                     print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
