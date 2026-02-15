@@ -28,6 +28,8 @@ from config import (
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """Split text into overlapping chunks."""
+    if overlap >= chunk_size:
+        raise ValueError(f"overlap ({overlap}) must be less than chunk_size ({chunk_size})")
     if not text or not text.strip():
         return []
     chunks = []
@@ -257,7 +259,7 @@ def main():
         print(f"{'='*60}")
 
         if not os.path.isdir(source_dir):
-            print(f"  Directory not found, skipping.")
+            print("  Directory not found, skipping.")
             continue
 
         files = scan_files(source_dir)
@@ -292,7 +294,7 @@ def main():
 
         # --- Images ---
         if args.skip_images:
-            print(f"\n  Skipping images (--skip-images)")
+            print("\n  Skipping images (--skip-images)")
         else:
             # Check using model-specific IDs so each model gets its own pass
             new_img = [p for p in files["image"]
