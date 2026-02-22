@@ -156,7 +156,7 @@ def ask_llm(context, question):
 @app.route("/", methods=["GET", "POST"])
 def index():
     query = ""
-    src_filter = ""
+    src_filter = "obsidian"
     content_type = ""
     top_k = 5
     no_llm = False
