@@ -217,6 +217,7 @@ def main():
     parser.add_argument("--only-source", choices=list(SOURCES.keys()), help="Index only one source")
     parser.add_argument("--vision-model", default=OLLAMA_VISION, help=f"Ollama vision model for images (default: {OLLAMA_VISION})")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
+    parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
     args = parser.parse_args()
 
     vision_model = args.vision_model
@@ -302,6 +303,8 @@ def main():
             # Check using model-specific IDs so each model gets its own pass
             new_img = [p for p in files["image"]
                        if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+            if args.max_images is not None:
+                new_img = new_img[:args.max_images]
             print(f"\n  Images ({vision_model}): {len(new_img)} new (skipping {len(files['image']) - len(new_img)} already indexed)")
             buffer = []
             images_t0 = time.time()

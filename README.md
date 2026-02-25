@@ -38,6 +38,9 @@ python3 -u index.py --only-images --only-source obsidian --vision-model qwen3-vl
 
 # Reset and rebuild from scratch
 python3 -u index.py --reset --skip-images
+
+# Test image capture with a small sample
+python3 -u index.py --only-images --max-images 5 --vision-model glm-ocr
 ```
 
 Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue where you left off. Each vision model produces separate chunks so multiple models can be used on the same images.
@@ -50,6 +53,7 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue wh
 | `--only-images` | Only process images, skip markdown/PDFs |
 | `--only-source yarle\|obsidian` | Index one collection only |
 | `--vision-model MODEL` | Ollama vision model for images (default: `qwen3-vl`) |
+| `--max-images N` | Process at most N new images (useful for testing) |
 | `--reset` | Delete existing index before rebuilding |
 
 ## Search
