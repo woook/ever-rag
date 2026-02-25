@@ -40,9 +40,8 @@ def search(collection, model, query: str, k: int = 5, where_filter: dict | None 
         "query_embeddings": embedding,
         "n_results": k,
         "include": ["documents", "metadatas", "distances"],
+        "where": where_filter or build_where_filter(None, None),
     }
-    if where_filter:
-        kwargs["where"] = where_filter
     return collection.query(**kwargs)
 
 
@@ -58,16 +57,14 @@ def ask_llm(context: str, question: str) -> str:
     return response.message.content
 
 
-def build_where_filter(source: str | None, content_type: str | None) -> dict | None:
-    """Build a ChromaDB where filter from CLI flags."""
-    conditions = []
+def build_where_filter(source: str | None, content_type: str | None) -> dict:
+    """Build a ChromaDB where filter from CLI flags. Always excludes failure sentinels."""
+    conditions = [{"source_type": {"$ne": "image_failed"}}]
     if source:
         conditions.append({"collection": source})
     if content_type:
         conditions.append({"source_type": content_type})
 
-    if not conditions:
-        return None
     if len(conditions) == 1:
         return conditions[0]
     return {"$and": conditions}

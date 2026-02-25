@@ -180,17 +180,13 @@ def index():
         elif query:
             t0 = time.time()
 
-            # Build filter
-            conditions = []
+            # Build filter — always exclude failure sentinels
+            conditions = [{"source_type": {"$ne": "image_failed"}}]
             if src_filter:
                 conditions.append({"collection": src_filter})
             if content_type:
                 conditions.append({"source_type": content_type})
-            where_filter = None
-            if len(conditions) == 1:
-                where_filter = conditions[0]
-            elif len(conditions) > 1:
-                where_filter = {"$and": conditions}
+            where_filter = conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
             results = do_search(query, top_k=top_k, where_filter=where_filter)
 

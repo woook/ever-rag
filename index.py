@@ -81,6 +81,18 @@ def scan_files(source_dir: str) -> dict[str, list[str]]:
     return files
 
 
+def get_failed_source_files(collection, vision_model: str) -> set[str]:
+    """Return source_file paths for images that have a failure sentinel for this vision model."""
+    try:
+        results = collection.get(
+            where={"$and": [{"source_type": "image_failed"}, {"vision_model": vision_model}]},
+            include=["metadatas"],
+        )
+        return {m["source_file"] for m in results["metadatas"]}
+    except Exception:
+        return set()
+
+
 def get_indexed_ids(collection) -> set[str]:
     """Query ChromaDB to get all existing chunk IDs."""
     indexed = set()
@@ -239,7 +251,18 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
         return results
     except Exception as e:
         print(f"  WARN: image processing failed for {path}: {e}")
-        return []
+        fid = file_id(path, suffix=f":{vision_model}")
+        return [{
+            "id": f"{fid}_0",
+            "text": "[image processing failed]",
+            "metadata": {
+                "source_file": path,
+                "source_type": "image_failed",
+                "collection": collection_name,
+                "chunk_index": 0,
+                "vision_model": vision_model,
+            },
+        }]
 
 
 CHROMA_BATCH_SIZE = 5000  # ChromaDB max batch size is ~5461; stay safely under
@@ -317,18 +340,29 @@ def main():
                 continue
             files = scan_files(source_dir)
             missing_files[source_name] = {"md": [], "pdf": [], "image": []}
+            failed_image_files = get_failed_source_files(collection, vision_model)
             for file_type, paths in [("md", files["md"]), ("pdf", files["pdf"]), ("image", files["image"])]:
                 if file_type == "image":
                     missing = [p for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+                    failed = [p for p in paths if p in failed_image_files]
+                    n_ok = len(paths) - len(missing) - len(failed)
+                    status_parts = []
+                    if missing:
+                        status_parts.append(f"MISSING {len(missing)}")
+                    if failed:
+                        status_parts.append(f"FAILED {len(failed)}")
+                    status = "OK" if not status_parts else ", ".join(status_parts)
+                    print(f"  {file_type:6s}: {n_ok}/{len(paths)} indexed  [{status}]")
                 else:
                     missing = [p for p in paths if f"{file_id(p)}_0" not in indexed_ids]
+                    missing_files[source_name][file_type] = missing
+                    indexed = len(paths) - len(missing)
+                    status = "OK" if not missing else f"MISSING {len(missing)}"
+                    print(f"  {file_type:6s}: {indexed}/{len(paths)} indexed  [{status}]")
+                    if missing:
+                        for p in missing:
+                            print(f"    - {p}")
                 missing_files[source_name][file_type] = missing
-                indexed = len(paths) - len(missing)
-                status = "OK" if not missing else f"MISSING {len(missing)}"
-                print(f"  {file_type:6s}: {indexed}/{len(paths)} indexed  [{status}]")
-                if missing and file_type != "image":
-                    for p in missing:
-                        print(f"    - {p}")
         print()
 
         if not args.fix:
