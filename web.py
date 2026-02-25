@@ -150,7 +150,7 @@ def ask_llm(context, question):
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
         ],
     )
-    return response["message"]["content"]
+    return response.message.content
 
 
 @app.route("/", methods=["GET", "POST"])

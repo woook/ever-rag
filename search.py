@@ -55,7 +55,7 @@ def ask_llm(context: str, question: str) -> str:
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
         ],
     )
-    return response["message"]["content"]
+    return response.message.content
 
 
 def build_where_filter(source: str | None, content_type: str | None) -> dict | None:

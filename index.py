@@ -173,7 +173,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                 "images": [image_data],
             }],
         )
-        description = response["message"]["content"].strip()
+        description = response.message.content.strip()
         if not description:
             return []
 
