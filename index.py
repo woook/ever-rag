@@ -109,6 +109,9 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
 
     text = clean_markdown(text)
     chunks = chunk_text(text)
+    if not chunks:
+        print(f"  WARN: no text extracted from {path} (empty or fully stripped)")
+        return []
     fid = file_id(path)
     results = []
     for i, chunk in enumerate(chunks):
@@ -143,6 +146,9 @@ def process_pdf(path: str, collection_name: str) -> list[dict]:
         doc.close()
 
     chunks = chunk_text(full_text)
+    if not chunks:
+        print(f"  WARN: no text extracted from {path} (scanned/image-only PDF?)")
+        return []
     fid = file_id(path)
     results = []
     for i, chunk in enumerate(chunks):
