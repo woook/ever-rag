@@ -229,6 +229,7 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
     parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
     parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
+    parser.add_argument("--fix", action="store_true", help="Use with --verify to index any missing files found")
     args = parser.parse_args()
 
     # Suppress MuPDF's internal diagnostic output — it crashes on PDFs with
@@ -262,6 +263,7 @@ def main():
 
     if args.verify:
         sources_to_verify = {k: v for k, v in SOURCES.items() if not args.only_source or k == args.only_source}
+        missing_files = {}  # source_name -> {"md": [...], "pdf": [...], "image": [...]}
         print()
         for source_name, source_dir in sources_to_verify.items():
             print(f"{'='*60}")
@@ -271,19 +273,87 @@ def main():
                 print("  Directory not found, skipping.")
                 continue
             files = scan_files(source_dir)
+            missing_files[source_name] = {"md": [], "pdf": [], "image": []}
             for file_type, paths in [("md", files["md"]), ("pdf", files["pdf"]), ("image", files["image"])]:
                 if file_type == "image":
-                    indexed = sum(1 for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" in indexed_ids)
+                    missing = [p for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
                 else:
-                    indexed = sum(1 for p in paths if f"{file_id(p)}_0" in indexed_ids)
-                missing = len(paths) - indexed
-                status = "OK" if missing == 0 else f"MISSING {missing}"
+                    missing = [p for p in paths if f"{file_id(p)}_0" not in indexed_ids]
+                missing_files[source_name][file_type] = missing
+                indexed = len(paths) - len(missing)
+                status = "OK" if not missing else f"MISSING {len(missing)}"
                 print(f"  {file_type:6s}: {indexed}/{len(paths)} indexed  [{status}]")
-                if missing > 0 and file_type != "image":
-                    for p in paths:
-                        if f"{file_id(p)}_0" not in indexed_ids:
-                            print(f"    - {p}")
+                if missing and file_type != "image":
+                    for p in missing:
+                        print(f"    - {p}")
         print()
+
+        if not args.fix:
+            return
+
+        total_missing = sum(len(v) for src in missing_files.values() for v in src.values())
+        if total_missing == 0:
+            print("Nothing to fix.")
+            return
+
+        print(f"Loading embedding model: {EMBEDDING_MODEL}...")
+        model = SentenceTransformer(EMBEDDING_MODEL)
+        if not args.skip_images:
+            print(f"Vision model: {vision_model}")
+
+        FLUSH_EVERY = 64
+        t0 = time.time()
+        total_new = 0
+
+        for source_name, missing in missing_files.items():
+            if not any(missing.values()):
+                continue
+            print(f"\n{'='*60}")
+            print(f"Fixing: {source_name}")
+            print(f"{'='*60}")
+
+            if not args.only_images:
+                print(f"\n  Markdown: {len(missing['md'])} missing")
+                buffer = []
+                for i, path in enumerate(missing["md"], 1):
+                    buffer.extend(process_markdown(path, source_name))
+                    if i % FLUSH_EVERY == 0 or i == len(missing["md"]):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                        print(f"    [{i}/{len(missing['md'])}] markdown — {total_new} chunks stored")
+
+                print(f"\n  PDFs: {len(missing['pdf'])} missing")
+                buffer = []
+                for i, path in enumerate(missing["pdf"], 1):
+                    buffer.extend(process_pdf(path, source_name))
+                    if i % FLUSH_EVERY == 0 or i == len(missing["pdf"]):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                        print(f"    [{i}/{len(missing['pdf'])}] PDFs — {total_new} chunks stored")
+
+            if not args.skip_images:
+                new_img = missing["image"]
+                if args.max_images is not None:
+                    new_img = new_img[:args.max_images]
+                print(f"\n  Images ({vision_model}): {len(new_img)} missing")
+                buffer = []
+                images_t0 = time.time()
+                for i, path in enumerate(new_img, 1):
+                    buffer.extend(process_image(path, source_name, vision_model))
+                    if i % 10 == 0 or i == len(new_img):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                        elapsed = time.time() - images_t0
+                        rate = i / elapsed if elapsed > 0 else 0
+                        remaining = (len(new_img) - i) / rate if rate > 0 else 0
+                        print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+
+        elapsed = time.time() - t0
+        print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")
+        print(f"Total documents in collection: {collection.count()}")
         return
 
     print(f"Loading embedding model: {EMBEDDING_MODEL}...")

@@ -41,6 +41,15 @@ python3 -u index.py --reset --skip-images
 
 # Test image capture with a small sample
 python3 -u index.py --only-images --max-images 5 --vision-model glm-ocr
+
+# Verify what's been indexed without re-indexing
+python3 -u index.py --verify
+python3 -u index.py --verify --only-source yarle
+python3 -u index.py --verify --vision-model glm-ocr
+
+# Verify and re-index any missing files in one step
+python3 -u index.py --verify --fix --skip-images
+python3 -u index.py --verify --fix --only-images --vision-model glm-ocr
 ```
 
 Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue where you left off. Each vision model produces separate chunks so multiple models can be used on the same images.
@@ -55,6 +64,8 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue wh
 | `--vision-model MODEL` | Ollama vision model for images (default: `qwen3-vl`) |
 | `--max-images N` | Process at most N new images (useful for testing) |
 | `--reset` | Delete existing index before rebuilding |
+| `--verify` | Audit indexed files against disk; no indexing performed |
+| `--fix` | Use with `--verify` to index any missing files found |
 
 ## Search
 
@@ -98,7 +109,7 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 - **Embedding model**: `all-MiniLM-L6-v2` (384-dim, ~80MB)
 - **Vector store**: ChromaDB with cosine similarity
 - **Chunking**: 500 chars with 50 char overlap
-- **Images**: processed newest-first, skips files < 5KB
+- **Images**: `.png`, `.jpg`, `.jpeg`, `.webp` only; processed newest-first by modification time; skips files < 5KB
 
 ## Sources
 
