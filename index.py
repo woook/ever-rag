@@ -228,6 +228,7 @@ def main():
     parser.add_argument("--vision-model", default=OLLAMA_VISION, help=f"Ollama vision model for images (default: {OLLAMA_VISION})")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
     parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
+    parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
     args = parser.parse_args()
 
     # Suppress MuPDF's internal diagnostic output — it crashes on PDFs with
@@ -258,6 +259,32 @@ def main():
     print("Checking already-indexed chunks...")
     indexed_ids = get_indexed_ids(collection)
     print(f"Already indexed: {len(indexed_ids)} chunks")
+
+    if args.verify:
+        sources_to_verify = {k: v for k, v in SOURCES.items() if not args.only_source or k == args.only_source}
+        print()
+        for source_name, source_dir in sources_to_verify.items():
+            print(f"{'='*60}")
+            print(f"Verifying: {source_name} ({source_dir})")
+            print(f"{'='*60}")
+            if not os.path.isdir(source_dir):
+                print("  Directory not found, skipping.")
+                continue
+            files = scan_files(source_dir)
+            for file_type, paths in [("md", files["md"]), ("pdf", files["pdf"]), ("image", files["image"])]:
+                if file_type == "image":
+                    indexed = sum(1 for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" in indexed_ids)
+                else:
+                    indexed = sum(1 for p in paths if f"{file_id(p)}_0" in indexed_ids)
+                missing = len(paths) - indexed
+                status = "OK" if missing == 0 else f"MISSING {missing}"
+                print(f"  {file_type:6s}: {indexed}/{len(paths)} indexed  [{status}]")
+                if missing > 0 and file_type != "image":
+                    for p in paths:
+                        if f"{file_id(p)}_0" not in indexed_ids:
+                            print(f"    - {p}")
+        print()
+        return
 
     print(f"Loading embedding model: {EMBEDDING_MODEL}...")
     model = SentenceTransformer(EMBEDDING_MODEL)
