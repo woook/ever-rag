@@ -424,15 +424,21 @@ def main():
                 buffer = []
                 images_t0 = time.time()
                 for i, path in enumerate(new_img, 1):
-                    buffer.extend(process_image(path, source_name, vision_model))
-                    if i % 10 == 0 or i == len(new_img):
-                        store_chunks(buffer, collection, model)
-                        total_new += len(buffer)
-                        buffer = []
-                        elapsed = time.time() - images_t0
-                        rate = i / elapsed if elapsed > 0 else 0
-                        remaining = (len(new_img) - i) / rate if rate > 0 else 0
-                        print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                    result = process_image(path, source_name, vision_model)
+                    # Flush failure sentinels immediately so they survive Ctrl+C
+                    if result and result[0]["metadata"].get("source_type") == "image_failed":
+                        store_chunks(result, collection, model)
+                        total_new += len(result)
+                    else:
+                        buffer.extend(result)
+                        if i % 10 == 0 or i == len(new_img):
+                            store_chunks(buffer, collection, model)
+                            total_new += len(buffer)
+                            buffer = []
+                    elapsed = time.time() - images_t0
+                    rate = i / elapsed if elapsed > 0 else 0
+                    remaining = (len(new_img) - i) / rate if rate > 0 else 0
+                    print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
 
         elapsed = time.time() - t0
         print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")
@@ -509,16 +515,21 @@ def main():
             buffer = []
             images_t0 = time.time()
             for i, path in enumerate(new_img, 1):
-                buffer.extend(process_image(path, source_name, vision_model))
-                # Flush more frequently for images since each one is slow
-                if i % 10 == 0 or i == len(new_img):
-                    store_chunks(buffer, collection, model)
-                    total_new += len(buffer)
-                    buffer = []
-                    elapsed = time.time() - images_t0
-                    rate = i / elapsed if elapsed > 0 else 0
-                    remaining = (len(new_img) - i) / rate if rate > 0 else 0
-                    print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                result = process_image(path, source_name, vision_model)
+                # Flush failure sentinels immediately so they survive Ctrl+C
+                if result and result[0]["metadata"].get("source_type") == "image_failed":
+                    store_chunks(result, collection, model)
+                    total_new += len(result)
+                else:
+                    buffer.extend(result)
+                    if i % 10 == 0 or i == len(new_img):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                elapsed = time.time() - images_t0
+                rate = i / elapsed if elapsed > 0 else 0
+                remaining = (len(new_img) - i) / rate if rate > 0 else 0
+                print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
 
     elapsed = time.time() - t0
     print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")

@@ -4,8 +4,8 @@ import os
 
 # Source directories
 SOURCES = {
-    "yarle": "/home/wook/Documents/evern/yarle1",
     "obsidian": "/home/wook/Documents/obsidiangit",
+    "yarle": "/home/wook/Documents/evern/yarle1",
 }
 
 # ChromaDB
