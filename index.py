@@ -199,6 +199,9 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
         return []
 
 
+CHROMA_BATCH_SIZE = 5000  # ChromaDB max batch size is ~5461; stay safely under
+
+
 def store_chunks(chunks: list[dict], collection, model: SentenceTransformer):
     """Embed and store a batch of chunks into ChromaDB."""
     if not chunks:
@@ -207,7 +210,14 @@ def store_chunks(chunks: list[dict], collection, model: SentenceTransformer):
     metadatas = [c["metadata"] for c in chunks]
     ids = [c["id"] for c in chunks]
     embeddings = model.encode(texts, show_progress_bar=False).tolist()
-    collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+    for start in range(0, len(chunks), CHROMA_BATCH_SIZE):
+        end = start + CHROMA_BATCH_SIZE
+        collection.add(
+            ids=ids[start:end],
+            embeddings=embeddings[start:end],
+            documents=texts[start:end],
+            metadatas=metadatas[start:end],
+        )
 
 
 def main():
