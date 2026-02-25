@@ -230,6 +230,10 @@ def main():
     parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
     args = parser.parse_args()
 
+    # Suppress MuPDF's internal diagnostic output — it crashes on PDFs with
+    # surrogate characters in error messages. Our own WARN handling is sufficient.
+    fitz.TOOLS.mupdf_display_errors(False)
+
     vision_model = args.vision_model
 
     client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
