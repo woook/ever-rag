@@ -42,6 +42,9 @@ python3 -u index.py --reset --skip-images
 # Test image capture with a small sample
 python3 -u index.py --only-images --max-images 5 --vision-model glm-ocr
 
+# Test PDF text extraction and OCR fallback with a small sample
+python3 -u index.py --only-source yarle --max-images 3 --vision-model glm-ocr
+
 # Verify what's been indexed without re-indexing
 python3 -u index.py --verify
 python3 -u index.py --verify --only-source yarle
@@ -62,7 +65,7 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue wh
 | `--only-images` | Only process images, skip markdown/PDFs |
 | `--only-source yarle\|obsidian` | Index one collection only |
 | `--vision-model MODEL` | Ollama vision model for images (default: `qwen3-vl`) |
-| `--max-images N` | Process at most N new images (useful for testing) |
+| `--max-images N` | Process at most N new images, and at most N scanned PDFs (per source) via OCR fallback |
 | `--reset` | Delete existing index before rebuilding |
 | `--verify` | Audit indexed files against disk; no indexing performed |
 | `--fix` | Use with `--verify` to index any missing files found |
