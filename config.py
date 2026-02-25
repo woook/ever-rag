@@ -25,4 +25,4 @@ OLLAMA_VISION = "qwen3-vl"
 
 # Image processing
 MIN_IMAGE_SIZE_BYTES = 5 * 1024  # skip images < 5KB
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
