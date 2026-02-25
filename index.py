@@ -128,41 +128,78 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
     return results
 
 
-def process_pdf(path: str, collection_name: str) -> list[dict]:
-    """Extract text from a PDF and chunk it."""
+def process_pdf(path: str, collection_name: str, vision_model: str | None = None) -> tuple[list[dict], bool]:
+    """Extract text from a PDF. Falls back to vision model OCR if no text layer found.
+
+    Returns (chunks, used_ocr) so callers can count OCR attempts for --max-images.
+    """
     try:
         doc = fitz.open(path)
     except Exception as e:
         print(f"  WARN: could not open PDF {path}: {e}")
-        return []
+        return [], False
 
     full_text = ""
+    page_images = []
     try:
         for page in doc:
             full_text += page.get_text() + "\n"
+        # Render pages to images now (before closing) if OCR fallback may be needed
+        if not chunk_text(full_text) and vision_model:
+            for page in doc:
+                try:
+                    png = page.get_pixmap(dpi=150).tobytes("png")
+                    page_images.append(base64.b64encode(png).decode("utf-8"))
+                except Exception as e:
+                    print(f"  WARN: could not render page {page.number} of {path}: {e}")
     except Exception as e:
         print(f"  WARN: error reading pages from {path}: {e}")
     finally:
         doc.close()
 
     chunks = chunk_text(full_text)
+    used_ocr = False
+
     if not chunks:
-        print(f"  WARN: no text extracted from {path} (scanned/image-only PDF?)")
-        return []
+        if not page_images:
+            print(f"  WARN: no text extracted from {path} (scanned/image-only PDF?)")
+            return [], False
+        print(f"  INFO: no text layer in {path}, running OCR ({vision_model})")
+        ocr_parts = []
+        for i, image_data in enumerate(page_images):
+            try:
+                response = ollama.chat(
+                    model=vision_model,
+                    messages=[{
+                        "role": "user",
+                        "content": "Extract all text from this document page. Output only the text content.",
+                        "images": [image_data],
+                    }],
+                )
+                text = response.message.content.strip()
+                if text:
+                    ocr_parts.append(text)
+            except Exception as e:
+                print(f"  WARN: OCR failed for page {i} of {path}: {e}")
+        chunks = chunk_text("\n\n".join(ocr_parts))
+        if not chunks:
+            print(f"  WARN: OCR produced no text for {path}")
+            return [], True
+        used_ocr = True
+
     fid = file_id(path)
     results = []
     for i, chunk in enumerate(chunks):
-        results.append({
-            "id": f"{fid}_{i}",
-            "text": chunk,
-            "metadata": {
-                "source_file": path,
-                "source_type": "pdf",
-                "collection": collection_name,
-                "chunk_index": i,
-            },
-        })
-    return results
+        meta = {
+            "source_file": path,
+            "source_type": "pdf",
+            "collection": collection_name,
+            "chunk_index": i,
+        }
+        if used_ocr:
+            meta["vision_model"] = vision_model
+        results.append({"id": f"{fid}_{i}", "text": chunk, "metadata": meta})
+    return results, used_ocr
 
 
 def process_image(path: str, collection_name: str, vision_model: str) -> list[dict]:
@@ -331,8 +368,14 @@ def main():
 
                 print(f"\n  PDFs: {len(missing['pdf'])} missing")
                 buffer = []
+                ocr_count = 0
                 for i, path in enumerate(missing["pdf"], 1):
-                    buffer.extend(process_pdf(path, source_name))
+                    ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
+                    vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                    chunks, used_ocr = process_pdf(path, source_name, vm)
+                    if used_ocr:
+                        ocr_count += 1
+                    buffer.extend(chunks)
                     if i % FLUSH_EVERY == 0 or i == len(missing["pdf"]):
                         store_chunks(buffer, collection, model)
                         total_new += len(buffer)
@@ -405,8 +448,14 @@ def main():
             new_pdf = [p for p in files["pdf"] if f"{file_id(p)}_0" not in indexed_ids]
             print(f"\n  PDFs: {len(new_pdf)} new (skipping {len(files['pdf']) - len(new_pdf)} already indexed)")
             buffer = []
+            ocr_count = 0
             for i, path in enumerate(new_pdf, 1):
-                buffer.extend(process_pdf(path, source_name))
+                ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
+                vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                chunks, used_ocr = process_pdf(path, source_name, vm)
+                if used_ocr:
+                    ocr_count += 1
+                buffer.extend(chunks)
                 if i % FLUSH_EVERY == 0 or i == len(new_pdf):
                     store_chunks(buffer, collection, model)
                     total_new += len(buffer)

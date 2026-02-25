@@ -110,6 +110,7 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 - **Vector store**: ChromaDB with cosine similarity
 - **Chunking**: 500 chars with 50 char overlap
 - **Images**: `.png`, `.jpg`, `.jpeg`, `.webp` only; processed newest-first by modification time; skips files < 5KB
+- **PDF OCR fallback**: if a PDF has no text layer, each page is rendered at 150 DPI and passed to the vision model for OCR; disabled by `--skip-images`
 
 ## Sources
 
