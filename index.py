@@ -83,19 +83,20 @@ def scan_files(source_dir: str, min_size_bytes: int = MIN_IMAGE_SIZE_BYTES,
                 if os.path.getsize(path) >= min_size_bytes:
                     if cutoff is None or os.path.getmtime(path) >= cutoff:
                         files["image"].append(path)
-    # Newest images first
+    # Newest images first (by modification time)
     files["image"].sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files
 
 
-def _call_vision_model(vision_model: str, image_b64: str, prompt: str) -> str:
+def _call_vision_model(vision_model: str, image_b64: str, prompt: str,
+                       mime_type: str = "image/png") -> str:
     """Call a vision model (cloud via LiteLLM or local via Ollama) and return response text."""
     if "/" in vision_model:
         import litellm
         response = litellm.completion(
             model=vision_model,
             messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
                 {"type": "text", "text": prompt},
             ]}],
         )
@@ -132,6 +133,22 @@ def get_successfully_indexed_images(collection, vision_model: str) -> set[str]:
     except Exception as e:
         print(f"  WARN: could not query successfully indexed images: {e}")
         return set()
+
+
+def delete_image_chunks(collection, path: str, vision_model: str) -> int:
+    """Delete all chunks (including failure sentinels) for an image/model pair. Returns count."""
+    try:
+        results = collection.get(
+            where={"$and": [{"source_file": path}, {"vision_model": vision_model}]},
+            include=[],
+        )
+        ids = results["ids"]
+        if ids:
+            collection.delete(ids=ids)
+        return len(ids)
+    except Exception as e:
+        print(f"  WARN: could not delete {vision_model} chunks for {path}: {e}")
+        return 0
 
 
 def get_indexed_ids(collection) -> set[str]:
@@ -255,10 +272,14 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
         with open(path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
 
+        ext = os.path.splitext(path)[1].lower()
+        mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                     ".webp": "image/webp"}.get(ext, "image/png")
         description = _call_vision_model(
             vision_model,
             image_data,
             "Describe the content of this image in detail, including any text visible.",
+            mime_type=mime_type,
         )
         if not description:
             raise RuntimeError("vision model returned empty content")
@@ -334,6 +355,9 @@ def main():
         help="Minimum image size in KB. Default: 20 (from config).")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
     parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
+    parser.add_argument("--replace-models", nargs="+", default=None, metavar="MODEL",
+        help="Delete chunks from these models when the primary model succeeds on the same image "
+             "(e.g. --replace-models glm-ocr to remove old local-model chunks during backfill).")
     parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
     parser.add_argument("--fix", action="store_true", help="Use with --verify to index any missing files found")
     args = parser.parse_args()
@@ -514,6 +538,7 @@ def main():
     FLUSH_EVERY = 64  # store after this many files to avoid losing progress
     t0 = time.time()
     total_new = 0
+    total_deleted = 0
 
     for source_name, source_dir in sources_to_process.items():
         print(f"\n{'='*60}")
@@ -579,14 +604,20 @@ def main():
                     result = process_image(path, source_name, primary_model)
                 except Exception as e:
                     if "RateLimitError" in type(e).__name__ or "rate_limit" in str(e).lower():
-                        print(f"\n  WARN: Gemini quota reached after {i-1} images. "
-                              "Re-run tomorrow to continue. Secondary pass will proceed on already-processed images.")
+                        print(f"\n  WARN: {primary_model} quota reached after {i-1} images. "
+                              "Re-run later to continue. Secondary pass will proceed on already-processed images.")
+                        if buffer:
+                            store_chunks(buffer, collection, model)
+                            total_new += len(buffer)
+                            buffer = []
                         break
                     raise
                 if result and result[0]["metadata"].get("source_type") == "image_failed":
                     store_chunks(result, collection, model)
                     total_new += len(result)
                 else:
+                    for old_model in (args.replace_models or []):
+                        total_deleted += delete_image_chunks(collection, path, old_model)
                     buffer.extend(result)
                     if i % 10 == 0 or i == len(new_img):
                         store_chunks(buffer, collection, model)
@@ -595,7 +626,7 @@ def main():
                 elapsed = time.time() - images_t0
                 rate = i / elapsed if elapsed > 0 else 0
                 remaining = (len(new_img) - i) / rate if rate > 0 else 0
-                print(f"    [{i}/{len(new_img)}] pass1 — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                print(f"    [{i}/{len(new_img)}] pass1 — {total_new + len(buffer)} chunks stored — ~{remaining/60:.0f}min remaining")
                 if gemini_delay:
                     time.sleep(gemini_delay)
 
@@ -613,7 +644,17 @@ def main():
                     buffer = []
                     images_t0 = time.time()
                     for i, path in enumerate(new_sec, 1):
-                        result = process_image(path, source_name, sec_model)
+                        try:
+                            result = process_image(path, source_name, sec_model)
+                        except Exception as e:
+                            if "RateLimitError" in type(e).__name__ or "rate_limit" in str(e).lower():
+                                print(f"\n  WARN: {sec_model} quota reached after {i-1} images. Re-run later to continue.")
+                                if buffer:
+                                    store_chunks(buffer, collection, model)
+                                    total_new += len(buffer)
+                                    buffer = []
+                                break
+                            raise
                         if result and result[0]["metadata"].get("source_type") == "image_failed":
                             store_chunks(result, collection, model)
                             total_new += len(result)
@@ -626,10 +667,13 @@ def main():
                         elapsed = time.time() - images_t0
                         rate = i / elapsed if elapsed > 0 else 0
                         remaining = (len(new_sec) - i) / rate if rate > 0 else 0
-                        print(f"    [{i}/{len(new_sec)}] pass2 — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                        print(f"    [{i}/{len(new_sec)}] pass2 — {total_new + len(buffer)} chunks stored — ~{remaining/60:.0f}min remaining")
 
     elapsed = time.time() - t0
-    print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")
+    summary = f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s"
+    if total_deleted:
+        summary += f" (deleted {total_deleted} replaced chunks)"
+    print(summary)
     print(f"Total documents in collection: {collection.count()}")
 
 
