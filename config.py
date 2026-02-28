@@ -8,6 +8,9 @@ SOURCES = {
     "yarle": "/home/wook/Documents/evern/yarle1",
 }
 
+# Sources processed in daily mode; --backfill uses all SOURCES
+DEFAULT_SOURCES = ["obsidian"]
+
 # ChromaDB
 CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
 COLLECTION_NAME = "knowledge_base"
@@ -21,8 +24,14 @@ CHUNK_OVERLAP = 50
 
 # Ollama models
 OLLAMA_LLM = "qwen3:8b"
-OLLAMA_VISION = "qwen3-vl"
 
 # Image processing
-MIN_IMAGE_SIZE_BYTES = 5 * 1024  # skip images < 5KB
+MIN_IMAGE_SIZE_BYTES = 20 * 1024        # skip icons/thumbnails (was 5KB)
+MAX_IMAGE_AGE_DAYS = 30                 # default: only process last 30 days
+DEFAULT_VISION_MODELS = [
+    "gemini/gemini-2.5-flash",
+    "bedrock/eu.anthropic.claude-sonnet-4-6",
+]
+GEMINI_FREE_TIER_DELAY = 4.5            # seconds between calls in --backfill (bulk mode)
+GEMINI_DEFAULT_DELAY = 2.0              # seconds between calls in daily mode (~12 RPM, under 15 RPM free tier)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
