@@ -21,8 +21,6 @@ from config import (
     DEFAULT_SOURCES,
     DEFAULT_VISION_MODELS,
     EMBEDDING_MODEL,
-    GEMINI_DEFAULT_DELAY,
-    GEMINI_FREE_TIER_DELAY,
     IMAGE_EXTENSIONS,
     MAX_IMAGE_AGE_DAYS,
     MIN_IMAGE_SIZE_BYTES,
@@ -89,18 +87,35 @@ def scan_files(source_dir: str, min_size_bytes: int = MIN_IMAGE_SIZE_BYTES,
 
 
 def _call_vision_model(vision_model: str, image_b64: str, prompt: str,
-                       mime_type: str = "image/png") -> str:
-    """Call a vision model (cloud via LiteLLM or local via Ollama) and return response text."""
+                       mime_type: str = "image/png", max_retries: int = 8) -> str:
+    """Call a vision model (cloud via LiteLLM or local via Ollama) and return response text.
+
+    For cloud models, retries on rate limits using the Retry-After header when available,
+    falling back to exponential backoff (5s, 10s, 20s, ...).
+    """
     if "/" in vision_model:
         import litellm
-        response = litellm.completion(
-            model=vision_model,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
-                {"type": "text", "text": prompt},
-            ]}],
-        )
-        return (response.choices[0].message.content or "").strip()
+        for attempt in range(max_retries):
+            try:
+                response = litellm.completion(
+                    model=vision_model,
+                    messages=[{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
+                        {"type": "text", "text": prompt},
+                    ]}],
+                )
+                return (response.choices[0].message.content or "").strip()
+            except Exception as e:
+                if "RateLimitError" not in type(e).__name__ and "rate_limit" not in str(e).lower():
+                    raise
+                if attempt == max_retries - 1:
+                    raise
+                retry_after = None
+                if hasattr(e, "response") and e.response is not None:
+                    retry_after = e.response.headers.get("Retry-After") or e.response.headers.get("retry-after")
+                wait = int(retry_after) if retry_after else (5 * 2 ** attempt)
+                print(f"  Rate limited by {vision_model}. Waiting {wait}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait)
     else:
         response = ollama.chat(
             model=vision_model,
@@ -349,8 +364,7 @@ def main():
         help=f"Vision model(s) in order. First runs on all new images; subsequent models only run on "
              f"images the first model succeeded on. Default: {DEFAULT_VISION_MODELS}")
     parser.add_argument("--backfill", action="store_true",
-        help="Process all images regardless of age (for bulk initial indexing). "
-             "Applies free-tier rate limiting between Gemini calls. Resumable.")
+        help="Process all images regardless of age (for bulk initial indexing). Resumable.")
     parser.add_argument("--min-image-kb", type=int, default=None,
         help="Minimum image size in KB. Default: 20 (from config).")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
@@ -372,7 +386,6 @@ def main():
     primary_model = vision_models[0]
     secondary_models = vision_models[1:]
     min_size = (args.min_image_kb * 1024) if args.min_image_kb else MIN_IMAGE_SIZE_BYTES
-    gemini_delay = GEMINI_FREE_TIER_DELAY if args.backfill else GEMINI_DEFAULT_DELAY
 
     client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
     if args.reset:
@@ -627,8 +640,6 @@ def main():
                 rate = i / elapsed if elapsed > 0 else 0
                 remaining = (len(new_img) - i) / rate if rate > 0 else 0
                 print(f"    [{i}/{len(new_img)}] pass1 — {total_new + len(buffer)} chunks stored — ~{remaining/60:.0f}min remaining")
-                if gemini_delay:
-                    time.sleep(gemini_delay)
 
             # Pass 2: secondary models (Sonnet), only where primary succeeded
             if secondary_models:
