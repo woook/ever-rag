@@ -18,10 +18,14 @@ from config import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     COLLECTION_NAME,
+    DEFAULT_SOURCES,
+    DEFAULT_VISION_MODELS,
     EMBEDDING_MODEL,
+    GEMINI_DEFAULT_DELAY,
+    GEMINI_FREE_TIER_DELAY,
     IMAGE_EXTENSIONS,
+    MAX_IMAGE_AGE_DAYS,
     MIN_IMAGE_SIZE_BYTES,
-    OLLAMA_VISION,
     SOURCES,
 )
 
@@ -62,9 +66,11 @@ def file_id(path: str, suffix: str = "") -> str:
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
-def scan_files(source_dir: str) -> dict[str, list[str]]:
+def scan_files(source_dir: str, min_size_bytes: int = MIN_IMAGE_SIZE_BYTES,
+               max_age_days: int | None = MAX_IMAGE_AGE_DAYS) -> dict[str, list[str]]:
     """Walk a directory and collect files by type."""
     files = {"md": [], "pdf": [], "image": []}
+    cutoff = time.time() - max_age_days * 86400 if max_age_days is not None else None
     for root, _, filenames in os.walk(source_dir):
         for fname in filenames:
             path = os.path.join(root, fname)
@@ -74,11 +80,32 @@ def scan_files(source_dir: str) -> dict[str, list[str]]:
             elif ext == ".pdf":
                 files["pdf"].append(path)
             elif ext in IMAGE_EXTENSIONS:
-                if os.path.getsize(path) >= MIN_IMAGE_SIZE_BYTES:
-                    files["image"].append(path)
+                if os.path.getsize(path) >= min_size_bytes:
+                    if cutoff is None or os.path.getmtime(path) >= cutoff:
+                        files["image"].append(path)
     # Newest images first
     files["image"].sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files
+
+
+def _call_vision_model(vision_model: str, image_b64: str, prompt: str) -> str:
+    """Call a vision model (cloud via LiteLLM or local via Ollama) and return response text."""
+    if "/" in vision_model:
+        import litellm
+        response = litellm.completion(
+            model=vision_model,
+            messages=[{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                {"type": "text", "text": prompt},
+            ]}],
+        )
+        return (response.choices[0].message.content or "").strip()
+    else:
+        response = ollama.chat(
+            model=vision_model,
+            messages=[{"role": "user", "content": prompt, "images": [image_b64]}],
+        )
+        return (response.message.content or "").strip()
 
 
 def get_failed_source_files(collection, vision_model: str) -> set[str]:
@@ -91,6 +118,19 @@ def get_failed_source_files(collection, vision_model: str) -> set[str]:
         return {m["source_file"] for m in results["metadatas"]}
     except Exception as e:
         print(f"  WARN: could not read failed image sentinels: {e}")
+        return set()
+
+
+def get_successfully_indexed_images(collection, vision_model: str) -> set[str]:
+    """Return source_file paths that have at least one successful chunk for this vision model."""
+    try:
+        results = collection.get(
+            where={"$and": [{"source_type": "image"}, {"vision_model": vision_model}]},
+            include=["metadatas"],
+        )
+        return {m["source_file"] for m in results["metadatas"]}
+    except Exception as e:
+        print(f"  WARN: could not query successfully indexed images: {e}")
         return set()
 
 
@@ -177,15 +217,11 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
             for i, page in enumerate(ocr_doc):
                 try:
                     image_data = base64.b64encode(page.get_pixmap(dpi=150).tobytes("png")).decode("utf-8")
-                    response = ollama.chat(
-                        model=vision_model,
-                        messages=[{
-                            "role": "user",
-                            "content": "Extract all text from this document page. Output only the text content.",
-                            "images": [image_data],
-                        }],
+                    text = _call_vision_model(
+                        vision_model,
+                        image_data,
+                        "Extract all text from this document page. Output only the text content.",
                     )
-                    text = response.message.content.strip()
                     if text:
                         ocr_parts.append(text)
                 except Exception as e:
@@ -214,25 +250,20 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
 
 
 def process_image(path: str, collection_name: str, vision_model: str) -> list[dict]:
-    """Use Ollama vision model to describe an image, return as chunks."""
+    """Use a vision model to describe an image, return as chunks."""
     try:
         with open(path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
 
-        response = ollama.chat(
-            model=vision_model,
-            messages=[{
-                "role": "user",
-                "content": "Describe the content of this image in detail, including any text visible.",
-                "images": [image_data],
-            }],
+        description = _call_vision_model(
+            vision_model,
+            image_data,
+            "Describe the content of this image in detail, including any text visible.",
         )
-        description = (response.message.content or "").strip()
         if not description:
             raise RuntimeError("vision model returned empty content")
 
         chunks = chunk_text(description)
-        # Include model name in ID so different models produce separate chunks
         fid = file_id(path, suffix=f":{vision_model}")
         results = []
         for i, chunk in enumerate(chunks):
@@ -249,6 +280,9 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
             })
         return results
     except Exception as e:
+        if "RateLimitError" in type(e).__name__ or "rate_limit" in str(e).lower():
+            print(f"  WARN: rate limit hit for {path}: {e}")
+            raise  # propagate — outer loop will catch and stop the pass
         print(f"  WARN: image processing failed for {path}: {e}")
         fid = file_id(path, suffix=f":{vision_model}")
         return [{
@@ -290,7 +324,14 @@ def main():
     parser.add_argument("--skip-images", action="store_true", help="Skip image processing (much faster)")
     parser.add_argument("--only-images", action="store_true", help="Only process images (resume image indexing)")
     parser.add_argument("--only-source", choices=list(SOURCES.keys()), help="Index only one source")
-    parser.add_argument("--vision-model", default=OLLAMA_VISION, help=f"Ollama vision model for images (default: {OLLAMA_VISION})")
+    parser.add_argument("--vision-models", nargs="+", default=DEFAULT_VISION_MODELS, metavar="MODEL",
+        help=f"Vision model(s) in order. First runs on all new images; subsequent models only run on "
+             f"images the first model succeeded on. Default: {DEFAULT_VISION_MODELS}")
+    parser.add_argument("--backfill", action="store_true",
+        help="Process all images regardless of age (for bulk initial indexing). "
+             "Applies free-tier rate limiting between Gemini calls. Resumable.")
+    parser.add_argument("--min-image-kb", type=int, default=None,
+        help="Minimum image size in KB. Default: 20 (from config).")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
     parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
     parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
@@ -303,7 +344,11 @@ def main():
     # surrogate characters in error messages. Our own WARN handling is sufficient.
     fitz.TOOLS.mupdf_display_errors(False)
 
-    vision_model = args.vision_model
+    vision_models = args.vision_models
+    primary_model = vision_models[0]
+    secondary_models = vision_models[1:]
+    min_size = (args.min_image_kb * 1024) if args.min_image_kb else MIN_IMAGE_SIZE_BYTES
+    gemini_delay = GEMINI_FREE_TIER_DELAY if args.backfill else GEMINI_DEFAULT_DELAY
 
     client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
     if args.reset:
@@ -328,8 +373,22 @@ def main():
     indexed_ids = get_indexed_ids(collection)
     print(f"Already indexed: {len(indexed_ids)} chunks")
 
+    # --- Source selection ---
+    if args.only_source:
+        sources_to_process = {args.only_source: SOURCES[args.only_source]}
+    elif args.backfill:
+        sources_to_process = dict(SOURCES)
+    else:
+        sources_to_process = {s: SOURCES[s] for s in DEFAULT_SOURCES}
+
     if args.verify:
-        sources_to_verify = {k: v for k, v in SOURCES.items() if not args.only_source or k == args.only_source}
+        if args.only_source:
+            sources_to_verify = {args.only_source: SOURCES[args.only_source]}
+        elif args.backfill:
+            sources_to_verify = dict(SOURCES)
+        else:
+            sources_to_verify = {s: SOURCES[s] for s in DEFAULT_SOURCES}
+
         missing_files = {}  # source_name -> {"md": [...], "pdf": [...], "image": [...]}
         print()
         for source_name, source_dir in sources_to_verify.items():
@@ -339,12 +398,13 @@ def main():
             if not os.path.isdir(source_dir):
                 print("  Directory not found, skipping.")
                 continue
-            files = scan_files(source_dir)
+            # Scan all images for verify (no age filter — show full picture)
+            files = scan_files(source_dir, min_size_bytes=min_size, max_age_days=None)
             missing_files[source_name] = {"md": [], "pdf": [], "image": []}
-            failed_image_files = get_failed_source_files(collection, vision_model)
+            failed_image_files = get_failed_source_files(collection, primary_model)
             for file_type, paths in [("md", files["md"]), ("pdf", files["pdf"]), ("image", files["image"])]:
                 if file_type == "image":
-                    missing = [p for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+                    missing = [p for p in paths if f"{file_id(p, suffix=f':{primary_model}')}_0" not in indexed_ids]
                     failed = [p for p in paths if p in failed_image_files]
                     n_ok = len(paths) - len(missing) - len(failed)
                     status_parts = []
@@ -377,7 +437,7 @@ def main():
         print(f"Loading embedding model: {EMBEDDING_MODEL}...")
         model = SentenceTransformer(EMBEDDING_MODEL)
         if not args.skip_images:
-            print(f"Vision model: {vision_model}")
+            print(f"Vision model: {primary_model}")
 
         FLUSH_EVERY = 64
         t0 = time.time()
@@ -406,7 +466,7 @@ def main():
                 ocr_count = 0
                 for i, path in enumerate(missing["pdf"], 1):
                     ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
-                    vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                    vm = None if (args.skip_images or ocr_limit_reached) else primary_model
                     chunks, used_ocr = process_pdf(path, source_name, vm)
                     if used_ocr:
                         ocr_count += 1
@@ -421,12 +481,11 @@ def main():
                 new_img = missing["image"]
                 if args.max_images is not None:
                     new_img = new_img[:args.max_images]
-                print(f"\n  Images ({vision_model}): {len(new_img)} missing")
+                print(f"\n  Images ({primary_model}): {len(new_img)} missing")
                 buffer = []
                 images_t0 = time.time()
                 for i, path in enumerate(new_img, 1):
-                    result = process_image(path, source_name, vision_model)
-                    # Flush failure sentinels immediately so they survive Ctrl+C
+                    result = process_image(path, source_name, primary_model)
                     if result and result[0]["metadata"].get("source_type") == "image_failed":
                         store_chunks(result, collection, model)
                         total_new += len(result)
@@ -450,9 +509,7 @@ def main():
     model = SentenceTransformer(EMBEDDING_MODEL)
 
     if not args.skip_images:
-        print(f"Vision model: {vision_model}")
-
-    sources_to_process = {k: v for k, v in SOURCES.items() if not args.only_source or k == args.only_source}
+        print(f"Vision models: {vision_models}")
 
     FLUSH_EVERY = 64  # store after this many files to avoid losing progress
     t0 = time.time()
@@ -467,12 +524,13 @@ def main():
             print("  Directory not found, skipping.")
             continue
 
-        files = scan_files(source_dir)
-        print(f"  Found: {len(files['md'])} markdown, {len(files['pdf'])} PDFs, {len(files['image'])} images")
+        max_age = None if args.backfill else MAX_IMAGE_AGE_DAYS
+        files = scan_files(source_dir, min_size_bytes=min_size, max_age_days=max_age)
+        age_note = "all ages" if max_age is None else f"≤{max_age}d old"
+        print(f"  Found: {len(files['md'])} markdown, {len(files['pdf'])} PDFs, {len(files['image'])} images ({age_note})")
 
         # --- Markdown ---
         if not args.only_images:
-            # Skip files where first chunk ID already exists
             new_md = [p for p in files["md"] if f"{file_id(p)}_0" not in indexed_ids]
             print(f"\n  Markdown: {len(new_md)} new (skipping {len(files['md']) - len(new_md)} already indexed)")
             buffer = []
@@ -492,7 +550,7 @@ def main():
             ocr_count = 0
             for i, path in enumerate(new_pdf, 1):
                 ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
-                vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                vm = None if (args.skip_images or ocr_limit_reached) else primary_model
                 chunks, used_ocr = process_pdf(path, source_name, vm)
                 if used_ocr:
                     ocr_count += 1
@@ -507,17 +565,24 @@ def main():
         if args.skip_images:
             print("\n  Skipping images (--skip-images)")
         else:
-            # Check using model-specific IDs so each model gets its own pass
+            # Pass 1: primary model (Gemini)
             new_img = [p for p in files["image"]
-                       if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+                       if f"{file_id(p, suffix=f':{primary_model}')}_0" not in indexed_ids]
             if args.max_images is not None:
                 new_img = new_img[:args.max_images]
-            print(f"\n  Images ({vision_model}): {len(new_img)} new (skipping {len(files['image']) - len(new_img)} already indexed)")
+            print(f"\n  Images pass 1 ({primary_model}): {len(new_img)} new "
+                  f"(skipping {len(files['image']) - len(new_img)} already indexed)")
             buffer = []
             images_t0 = time.time()
             for i, path in enumerate(new_img, 1):
-                result = process_image(path, source_name, vision_model)
-                # Flush failure sentinels immediately so they survive Ctrl+C
+                try:
+                    result = process_image(path, source_name, primary_model)
+                except Exception as e:
+                    if "RateLimitError" in type(e).__name__ or "rate_limit" in str(e).lower():
+                        print(f"\n  WARN: Gemini quota reached after {i-1} images. "
+                              "Re-run tomorrow to continue. Secondary pass will proceed on already-processed images.")
+                        break
+                    raise
                 if result and result[0]["metadata"].get("source_type") == "image_failed":
                     store_chunks(result, collection, model)
                     total_new += len(result)
@@ -530,7 +595,38 @@ def main():
                 elapsed = time.time() - images_t0
                 rate = i / elapsed if elapsed > 0 else 0
                 remaining = (len(new_img) - i) / rate if rate > 0 else 0
-                print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                print(f"    [{i}/{len(new_img)}] pass1 — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                if gemini_delay:
+                    time.sleep(gemini_delay)
+
+            # Pass 2: secondary models (Sonnet), only where primary succeeded
+            if secondary_models:
+                gemini_success = get_successfully_indexed_images(collection, primary_model)
+                for sec_model in secondary_models:
+                    new_sec = [p for p in files["image"]
+                               if f"{file_id(p, suffix=f':{sec_model}')}_0" not in indexed_ids
+                               and p in gemini_success]
+                    if args.max_images is not None:
+                        new_sec = new_sec[:args.max_images]
+                    print(f"\n  Images pass 2 ({sec_model}): {len(new_sec)} new "
+                          f"(filtered to Gemini successes)")
+                    buffer = []
+                    images_t0 = time.time()
+                    for i, path in enumerate(new_sec, 1):
+                        result = process_image(path, source_name, sec_model)
+                        if result and result[0]["metadata"].get("source_type") == "image_failed":
+                            store_chunks(result, collection, model)
+                            total_new += len(result)
+                        else:
+                            buffer.extend(result)
+                            if i % 10 == 0 or i == len(new_sec):
+                                store_chunks(buffer, collection, model)
+                                total_new += len(buffer)
+                                buffer = []
+                        elapsed = time.time() - images_t0
+                        rate = i / elapsed if elapsed > 0 else 0
+                        remaining = (len(new_sec) - i) / rate if rate > 0 else 0
+                        print(f"    [{i}/{len(new_sec)}] pass2 — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
 
     elapsed = time.time() - t0
     print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")
