@@ -32,6 +32,4 @@ DEFAULT_VISION_MODELS = [
     "gemini/gemini-2.5-flash",
     "bedrock/eu.anthropic.claude-sonnet-4-6",
 ]
-GEMINI_FREE_TIER_DELAY = 4.5            # seconds between calls in --backfill (bulk mode)
-GEMINI_DEFAULT_DELAY = 2.0              # seconds between calls in daily mode (~12 RPM, under 15 RPM free tier)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
