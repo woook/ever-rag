@@ -81,6 +81,19 @@ def scan_files(source_dir: str) -> dict[str, list[str]]:
     return files
 
 
+def get_failed_source_files(collection, vision_model: str) -> set[str]:
+    """Return source_file paths for images that have a failure sentinel for this vision model."""
+    try:
+        results = collection.get(
+            where={"$and": [{"source_type": "image_failed"}, {"vision_model": vision_model}]},
+            include=["metadatas"],
+        )
+        return {m["source_file"] for m in results["metadatas"]}
+    except Exception as e:
+        print(f"  WARN: could not read failed image sentinels: {e}")
+        return set()
+
+
 def get_indexed_ids(collection) -> set[str]:
     """Query ChromaDB to get all existing chunk IDs."""
     indexed = set()
@@ -109,6 +122,9 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
 
     text = clean_markdown(text)
     chunks = chunk_text(text)
+    if not chunks:
+        print(f"  WARN: no text extracted from {path} (empty or fully stripped)")
+        return []
     fid = file_id(path)
     results = []
     for i, chunk in enumerate(chunks):
@@ -125,38 +141,76 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
     return results
 
 
-def process_pdf(path: str, collection_name: str) -> list[dict]:
-    """Extract text from a PDF and chunk it."""
+def process_pdf(path: str, collection_name: str, vision_model: str | None = None) -> tuple[list[dict], bool]:
+    """Extract text from a PDF. Falls back to vision model OCR if no text layer found.
+
+    Returns (chunks, used_ocr) so callers can count OCR attempts for --max-images.
+    """
     try:
         doc = fitz.open(path)
     except Exception as e:
         print(f"  WARN: could not open PDF {path}: {e}")
-        return []
+        return [], False
 
     full_text = ""
+    needs_ocr = False
     try:
         for page in doc:
             full_text += page.get_text() + "\n"
+        needs_ocr = not chunk_text(full_text) and bool(vision_model)
     except Exception as e:
         print(f"  WARN: error reading pages from {path}: {e}")
     finally:
         doc.close()
 
     chunks = chunk_text(full_text)
+    used_ocr = False
+
+    if not chunks:
+        if not needs_ocr:
+            print(f"  WARN: no text extracted from {path} (scanned/image-only PDF?)")
+            return [], False
+        print(f"  INFO: no text layer in {path}, running OCR ({vision_model})")
+        ocr_parts = []
+        ocr_doc = fitz.open(path)
+        try:
+            for i, page in enumerate(ocr_doc):
+                try:
+                    image_data = base64.b64encode(page.get_pixmap(dpi=150).tobytes("png")).decode("utf-8")
+                    response = ollama.chat(
+                        model=vision_model,
+                        messages=[{
+                            "role": "user",
+                            "content": "Extract all text from this document page. Output only the text content.",
+                            "images": [image_data],
+                        }],
+                    )
+                    text = response.message.content.strip()
+                    if text:
+                        ocr_parts.append(text)
+                except Exception as e:
+                    print(f"  WARN: OCR failed for page {i} of {path}: {e}")
+        finally:
+            ocr_doc.close()
+        chunks = chunk_text("\n\n".join(ocr_parts))
+        if not chunks:
+            print(f"  WARN: OCR produced no text for {path}")
+            return [], True
+        used_ocr = True
+
     fid = file_id(path)
     results = []
     for i, chunk in enumerate(chunks):
-        results.append({
-            "id": f"{fid}_{i}",
-            "text": chunk,
-            "metadata": {
-                "source_file": path,
-                "source_type": "pdf",
-                "collection": collection_name,
-                "chunk_index": i,
-            },
-        })
-    return results
+        meta = {
+            "source_file": path,
+            "source_type": "pdf",
+            "collection": collection_name,
+            "chunk_index": i,
+        }
+        if used_ocr:
+            meta["vision_model"] = vision_model
+        results.append({"id": f"{fid}_{i}", "text": chunk, "metadata": meta})
+    return results, used_ocr
 
 
 def process_image(path: str, collection_name: str, vision_model: str) -> list[dict]:
@@ -173,9 +227,9 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                 "images": [image_data],
             }],
         )
-        description = response["message"]["content"].strip()
+        description = (response.message.content or "").strip()
         if not description:
-            return []
+            raise RuntimeError("vision model returned empty content")
 
         chunks = chunk_text(description)
         # Include model name in ID so different models produce separate chunks
@@ -196,7 +250,21 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
         return results
     except Exception as e:
         print(f"  WARN: image processing failed for {path}: {e}")
-        return []
+        fid = file_id(path, suffix=f":{vision_model}")
+        return [{
+            "id": f"{fid}_0",
+            "text": "[image processing failed]",
+            "metadata": {
+                "source_file": path,
+                "source_type": "image_failed",
+                "collection": collection_name,
+                "chunk_index": 0,
+                "vision_model": vision_model,
+            },
+        }]
+
+
+CHROMA_BATCH_SIZE = 5000  # ChromaDB max batch size is ~5461; stay safely under
 
 
 def store_chunks(chunks: list[dict], collection, model: SentenceTransformer):
@@ -207,7 +275,14 @@ def store_chunks(chunks: list[dict], collection, model: SentenceTransformer):
     metadatas = [c["metadata"] for c in chunks]
     ids = [c["id"] for c in chunks]
     embeddings = model.encode(texts, show_progress_bar=False).tolist()
-    collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+    for start in range(0, len(chunks), CHROMA_BATCH_SIZE):
+        end = start + CHROMA_BATCH_SIZE
+        collection.add(
+            ids=ids[start:end],
+            embeddings=embeddings[start:end],
+            documents=texts[start:end],
+            metadatas=metadatas[start:end],
+        )
 
 
 def main():
@@ -217,7 +292,16 @@ def main():
     parser.add_argument("--only-source", choices=list(SOURCES.keys()), help="Index only one source")
     parser.add_argument("--vision-model", default=OLLAMA_VISION, help=f"Ollama vision model for images (default: {OLLAMA_VISION})")
     parser.add_argument("--reset", action="store_true", help="Delete existing index before building")
+    parser.add_argument("--max-images", type=int, default=None, help="Limit number of images processed (useful for testing)")
+    parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
+    parser.add_argument("--fix", action="store_true", help="Use with --verify to index any missing files found")
     args = parser.parse_args()
+    if args.fix and not args.verify:
+        parser.error("--fix requires --verify")
+
+    # Suppress MuPDF's internal diagnostic output — it crashes on PDFs with
+    # surrogate characters in error messages. Our own WARN handling is sufficient.
+    fitz.TOOLS.mupdf_display_errors(False)
 
     vision_model = args.vision_model
 
@@ -243,6 +327,124 @@ def main():
     print("Checking already-indexed chunks...")
     indexed_ids = get_indexed_ids(collection)
     print(f"Already indexed: {len(indexed_ids)} chunks")
+
+    if args.verify:
+        sources_to_verify = {k: v for k, v in SOURCES.items() if not args.only_source or k == args.only_source}
+        missing_files = {}  # source_name -> {"md": [...], "pdf": [...], "image": [...]}
+        print()
+        for source_name, source_dir in sources_to_verify.items():
+            print(f"{'='*60}")
+            print(f"Verifying: {source_name} ({source_dir})")
+            print(f"{'='*60}")
+            if not os.path.isdir(source_dir):
+                print("  Directory not found, skipping.")
+                continue
+            files = scan_files(source_dir)
+            missing_files[source_name] = {"md": [], "pdf": [], "image": []}
+            failed_image_files = get_failed_source_files(collection, vision_model)
+            for file_type, paths in [("md", files["md"]), ("pdf", files["pdf"]), ("image", files["image"])]:
+                if file_type == "image":
+                    missing = [p for p in paths if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+                    failed = [p for p in paths if p in failed_image_files]
+                    n_ok = len(paths) - len(missing) - len(failed)
+                    status_parts = []
+                    if missing:
+                        status_parts.append(f"MISSING {len(missing)}")
+                    if failed:
+                        status_parts.append(f"FAILED {len(failed)}")
+                    status = "OK" if not status_parts else ", ".join(status_parts)
+                    print(f"  {file_type:6s}: {n_ok}/{len(paths)} indexed  [{status}]")
+                else:
+                    missing = [p for p in paths if f"{file_id(p)}_0" not in indexed_ids]
+                    missing_files[source_name][file_type] = missing
+                    indexed = len(paths) - len(missing)
+                    status = "OK" if not missing else f"MISSING {len(missing)}"
+                    print(f"  {file_type:6s}: {indexed}/{len(paths)} indexed  [{status}]")
+                    if missing:
+                        for p in missing:
+                            print(f"    - {p}")
+                missing_files[source_name][file_type] = missing
+        print()
+
+        if not args.fix:
+            return
+
+        total_missing = sum(len(v) for src in missing_files.values() for v in src.values())
+        if total_missing == 0:
+            print("Nothing to fix.")
+            return
+
+        print(f"Loading embedding model: {EMBEDDING_MODEL}...")
+        model = SentenceTransformer(EMBEDDING_MODEL)
+        if not args.skip_images:
+            print(f"Vision model: {vision_model}")
+
+        FLUSH_EVERY = 64
+        t0 = time.time()
+        total_new = 0
+
+        for source_name, missing in missing_files.items():
+            if not any(missing.values()):
+                continue
+            print(f"\n{'='*60}")
+            print(f"Fixing: {source_name}")
+            print(f"{'='*60}")
+
+            if not args.only_images:
+                print(f"\n  Markdown: {len(missing['md'])} missing")
+                buffer = []
+                for i, path in enumerate(missing["md"], 1):
+                    buffer.extend(process_markdown(path, source_name))
+                    if i % FLUSH_EVERY == 0 or i == len(missing["md"]):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                        print(f"    [{i}/{len(missing['md'])}] markdown — {total_new} chunks stored")
+
+                print(f"\n  PDFs: {len(missing['pdf'])} missing")
+                buffer = []
+                ocr_count = 0
+                for i, path in enumerate(missing["pdf"], 1):
+                    ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
+                    vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                    chunks, used_ocr = process_pdf(path, source_name, vm)
+                    if used_ocr:
+                        ocr_count += 1
+                    buffer.extend(chunks)
+                    if i % FLUSH_EVERY == 0 or i == len(missing["pdf"]):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                        print(f"    [{i}/{len(missing['pdf'])}] PDFs — {total_new} chunks stored")
+
+            if not args.skip_images:
+                new_img = missing["image"]
+                if args.max_images is not None:
+                    new_img = new_img[:args.max_images]
+                print(f"\n  Images ({vision_model}): {len(new_img)} missing")
+                buffer = []
+                images_t0 = time.time()
+                for i, path in enumerate(new_img, 1):
+                    result = process_image(path, source_name, vision_model)
+                    # Flush failure sentinels immediately so they survive Ctrl+C
+                    if result and result[0]["metadata"].get("source_type") == "image_failed":
+                        store_chunks(result, collection, model)
+                        total_new += len(result)
+                    else:
+                        buffer.extend(result)
+                        if i % 10 == 0 or i == len(new_img):
+                            store_chunks(buffer, collection, model)
+                            total_new += len(buffer)
+                            buffer = []
+                    elapsed = time.time() - images_t0
+                    rate = i / elapsed if elapsed > 0 else 0
+                    remaining = (len(new_img) - i) / rate if rate > 0 else 0
+                    print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+
+        elapsed = time.time() - t0
+        print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")
+        print(f"Total documents in collection: {collection.count()}")
+        return
 
     print(f"Loading embedding model: {EMBEDDING_MODEL}...")
     model = SentenceTransformer(EMBEDDING_MODEL)
@@ -287,8 +489,14 @@ def main():
             new_pdf = [p for p in files["pdf"] if f"{file_id(p)}_0" not in indexed_ids]
             print(f"\n  PDFs: {len(new_pdf)} new (skipping {len(files['pdf']) - len(new_pdf)} already indexed)")
             buffer = []
+            ocr_count = 0
             for i, path in enumerate(new_pdf, 1):
-                buffer.extend(process_pdf(path, source_name))
+                ocr_limit_reached = args.max_images is not None and ocr_count >= args.max_images
+                vm = None if (args.skip_images or ocr_limit_reached) else vision_model
+                chunks, used_ocr = process_pdf(path, source_name, vm)
+                if used_ocr:
+                    ocr_count += 1
+                buffer.extend(chunks)
                 if i % FLUSH_EVERY == 0 or i == len(new_pdf):
                     store_chunks(buffer, collection, model)
                     total_new += len(buffer)
@@ -302,20 +510,27 @@ def main():
             # Check using model-specific IDs so each model gets its own pass
             new_img = [p for p in files["image"]
                        if f"{file_id(p, suffix=f':{vision_model}')}_0" not in indexed_ids]
+            if args.max_images is not None:
+                new_img = new_img[:args.max_images]
             print(f"\n  Images ({vision_model}): {len(new_img)} new (skipping {len(files['image']) - len(new_img)} already indexed)")
             buffer = []
             images_t0 = time.time()
             for i, path in enumerate(new_img, 1):
-                buffer.extend(process_image(path, source_name, vision_model))
-                # Flush more frequently for images since each one is slow
-                if i % 10 == 0 or i == len(new_img):
-                    store_chunks(buffer, collection, model)
-                    total_new += len(buffer)
-                    buffer = []
-                    elapsed = time.time() - images_t0
-                    rate = i / elapsed if elapsed > 0 else 0
-                    remaining = (len(new_img) - i) / rate if rate > 0 else 0
-                    print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
+                result = process_image(path, source_name, vision_model)
+                # Flush failure sentinels immediately so they survive Ctrl+C
+                if result and result[0]["metadata"].get("source_type") == "image_failed":
+                    store_chunks(result, collection, model)
+                    total_new += len(result)
+                else:
+                    buffer.extend(result)
+                    if i % 10 == 0 or i == len(new_img):
+                        store_chunks(buffer, collection, model)
+                        total_new += len(buffer)
+                        buffer = []
+                elapsed = time.time() - images_t0
+                rate = i / elapsed if elapsed > 0 else 0
+                remaining = (len(new_img) - i) / rate if rate > 0 else 0
+                print(f"    [{i}/{len(new_img)}] images — {total_new} chunks stored — ~{remaining/60:.0f}min remaining")
 
     elapsed = time.time() - t0
     print(f"\nDone! Added {total_new} new chunks in {elapsed:.1f}s")

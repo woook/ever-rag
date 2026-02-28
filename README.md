@@ -38,6 +38,21 @@ python3 -u index.py --only-images --only-source obsidian --vision-model qwen3-vl
 
 # Reset and rebuild from scratch
 python3 -u index.py --reset --skip-images
+
+# Test image capture with a small sample
+python3 -u index.py --only-images --max-images 5 --vision-model glm-ocr
+
+# Test PDF text extraction and OCR fallback with a small sample
+python3 -u index.py --only-source yarle --max-images 3 --vision-model glm-ocr
+
+# Verify what's been indexed without re-indexing
+python3 -u index.py --verify
+python3 -u index.py --verify --only-source yarle
+python3 -u index.py --verify --vision-model glm-ocr
+
+# Verify and re-index any missing files in one step
+python3 -u index.py --verify --fix --skip-images
+python3 -u index.py --verify --fix --only-images --vision-model glm-ocr
 ```
 
 Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue where you left off. Each vision model produces separate chunks so multiple models can be used on the same images.
@@ -50,7 +65,10 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue wh
 | `--only-images` | Only process images, skip markdown/PDFs |
 | `--only-source yarle\|obsidian` | Index one collection only |
 | `--vision-model MODEL` | Ollama vision model for images (default: `qwen3-vl`) |
+| `--max-images N` | Process at most N new images, and at most N scanned PDFs (per source) via OCR fallback |
 | `--reset` | Delete existing index before rebuilding |
+| `--verify` | Audit indexed files against disk; no indexing performed |
+| `--fix` | Use with `--verify` to index any missing files found |
 
 ## Search
 
@@ -94,7 +112,8 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 - **Embedding model**: `all-MiniLM-L6-v2` (384-dim, ~80MB)
 - **Vector store**: ChromaDB with cosine similarity
 - **Chunking**: 500 chars with 50 char overlap
-- **Images**: processed newest-first, skips files < 5KB
+- **Images**: `.png`, `.jpg`, `.jpeg`, `.webp` only; processed newest-first by modification time; skips files < 5KB
+- **PDF OCR fallback**: if a PDF has no text layer, each page is rendered at 150 DPI and passed to the vision model for OCR; disabled by `--skip-images`
 
 ## Sources
 
