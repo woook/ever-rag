@@ -90,7 +90,7 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue. I
 | `--skip-images` | Skip image processing |
 | `--only-images` | Only process images, skip markdown/PDFs |
 | `--only-source yarle\|obsidian` | Index one collection only |
-| `--backfill` | Process all images regardless of age; applies free-tier rate limiting (4.5s/call). Default processes last 30 days only |
+| `--backfill` | Process all images regardless of age (for bulk initial indexing). Retries on 429s using `Retry-After` header with exponential backoff. Default processes last 30 days only |
 | `--vision-models MODEL …` | Vision models in order. First runs on all new images; subsequent models run only on images the first succeeded on. Default: `gemini/gemini-2.5-flash` then `bedrock/eu.anthropic.claude-sonnet-4-6` |
 | `--replace-models MODEL …` | Delete chunks from these models when the primary model succeeds (e.g. `--replace-models glm-ocr`) |
 | `--min-image-kb N` | Minimum image size in KB (default: 20) |
