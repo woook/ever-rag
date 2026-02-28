@@ -150,5 +150,5 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 
 | Collection | Path | Content |
 |------------|------|---------|
-| yarle | `/home/wook/Documents/evern/yarle1` | ~1,715 markdown, ~263 PDFs, ~2,203 images |
-| obsidian | `/home/wook/Documents/obsidiangit` | ~600 markdown, ~20 PDFs, ~1,373 images |
+| yarle | `/home/wook/Documents/evern/yarle1` | ~1,715 Markdown files, ~263 PDFs, ~2,203 images |
+| obsidian | `/home/wook/Documents/obsidiangit` | ~600 Markdown files, ~20 PDFs, ~1,373 images |

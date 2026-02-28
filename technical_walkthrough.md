@@ -144,7 +144,7 @@ Each chunk ID has the form `{md5_12chars}_{chunk_index}`. For images the MD5 inc
 
 Images go through two sequential model passes. Pass 2 only runs on files Pass 1 succeeded on, so Bedrock costs are not incurred for images Gemini could not process.
 
-```
+```text
 Pass 1 — Gemini 2.5 Flash (primary)
   ├─ All new images matching size/age filters
   ├─ Rate-limited: 2.0s delay (daily) or 4.5s delay (--backfill)
@@ -307,6 +307,8 @@ print('Example:', img['metadatas'][0])
 Image chunk metadata fields: ['source_type', 'collection', 'chunk_index', 'source_file']
 Example: {'source_type': 'image', 'collection': 'obsidian', 'chunk_index': 0, 'source_file': '/home/wook/Documents/obsidiangit/2025/attachments/Pasted image 20260127163605.png'}
 ```
+
+This chunk was indexed by the legacy `glm-ocr` local model, which predates the cloud vision pipeline. `vision_model` is absent for all legacy chunks. Cloud-model chunks (Gemini, Sonnet) always carry `vision_model`; see the Gemini and Sonnet examples below.
 
 ```bash
 /usr/bin/python3 -c "
