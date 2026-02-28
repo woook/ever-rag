@@ -89,7 +89,8 @@ def get_failed_source_files(collection, vision_model: str) -> set[str]:
             include=["metadatas"],
         )
         return {m["source_file"] for m in results["metadatas"]}
-    except Exception:
+    except Exception as e:
+        print(f"  WARN: could not read failed image sentinels: {e}")
         return set()
 
 
@@ -152,18 +153,11 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
         return [], False
 
     full_text = ""
-    page_images = []
+    needs_ocr = False
     try:
         for page in doc:
             full_text += page.get_text() + "\n"
-        # Render pages to images now (before closing) if OCR fallback may be needed
-        if not chunk_text(full_text) and vision_model:
-            for page in doc:
-                try:
-                    png = page.get_pixmap(dpi=150).tobytes("png")
-                    page_images.append(base64.b64encode(png).decode("utf-8"))
-                except Exception as e:
-                    print(f"  WARN: could not render page {page.number} of {path}: {e}")
+        needs_ocr = not chunk_text(full_text) and bool(vision_model)
     except Exception as e:
         print(f"  WARN: error reading pages from {path}: {e}")
     finally:
@@ -173,26 +167,31 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
     used_ocr = False
 
     if not chunks:
-        if not page_images:
+        if not needs_ocr:
             print(f"  WARN: no text extracted from {path} (scanned/image-only PDF?)")
             return [], False
         print(f"  INFO: no text layer in {path}, running OCR ({vision_model})")
         ocr_parts = []
-        for i, image_data in enumerate(page_images):
-            try:
-                response = ollama.chat(
-                    model=vision_model,
-                    messages=[{
-                        "role": "user",
-                        "content": "Extract all text from this document page. Output only the text content.",
-                        "images": [image_data],
-                    }],
-                )
-                text = response.message.content.strip()
-                if text:
-                    ocr_parts.append(text)
-            except Exception as e:
-                print(f"  WARN: OCR failed for page {i} of {path}: {e}")
+        ocr_doc = fitz.open(path)
+        try:
+            for i, page in enumerate(ocr_doc):
+                try:
+                    image_data = base64.b64encode(page.get_pixmap(dpi=150).tobytes("png")).decode("utf-8")
+                    response = ollama.chat(
+                        model=vision_model,
+                        messages=[{
+                            "role": "user",
+                            "content": "Extract all text from this document page. Output only the text content.",
+                            "images": [image_data],
+                        }],
+                    )
+                    text = response.message.content.strip()
+                    if text:
+                        ocr_parts.append(text)
+                except Exception as e:
+                    print(f"  WARN: OCR failed for page {i} of {path}: {e}")
+        finally:
+            ocr_doc.close()
         chunks = chunk_text("\n\n".join(ocr_parts))
         if not chunks:
             print(f"  WARN: OCR produced no text for {path}")
@@ -228,9 +227,9 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                 "images": [image_data],
             }],
         )
-        description = response.message.content.strip()
+        description = (response.message.content or "").strip()
         if not description:
-            return []
+            raise RuntimeError("vision model returned empty content")
 
         chunks = chunk_text(description)
         # Include model name in ID so different models produce separate chunks
@@ -297,6 +296,8 @@ def main():
     parser.add_argument("--verify", action="store_true", help="Check which files on disk are indexed; no indexing is performed")
     parser.add_argument("--fix", action="store_true", help="Use with --verify to index any missing files found")
     args = parser.parse_args()
+    if args.fix and not args.verify:
+        parser.error("--fix requires --verify")
 
     # Suppress MuPDF's internal diagnostic output — it crashes on PDFs with
     # surrogate characters in error messages. Our own WARN handling is sufficient.
