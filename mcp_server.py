@@ -6,8 +6,8 @@ Returns raw chunks with metadata so Claude can synthesise the answer.
 """
 
 import os
-import re
 import sys
+from datetime import date
 
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -54,7 +54,7 @@ def search_notes(
         query: Natural-language search query.
         source: Limit to one collection — "obsidian" or "yarle". Omit for both.
         content_type: Limit to file type — "md", "pdf", or "image". Omit for all.
-        top_k: Number of chunks to return (default 5, max ~20).
+        top_k: Number of chunks to return (default 5, capped at 100).
         date_after: Only return notes on or after this ISO date, e.g. "2025-03-01".
             Note: implemented as a post-filter over top_k*20 candidates — if most
             chunks predate the cutoff you may receive fewer than top_k results.
@@ -66,8 +66,11 @@ def search_notes(
     if top_k < 1:
         return "top_k must be at least 1."
     top_k = min(top_k, 100)
-    if date_after and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_after):
-        return f"Invalid date_after '{date_after}'. Must be ISO format YYYY-MM-DD."
+    if date_after:
+        try:
+            date.fromisoformat(date_after)
+        except ValueError:
+            return f"Invalid date_after '{date_after}'. Must be a valid ISO date YYYY-MM-DD."
 
     conditions = [{"source_type": {"$ne": "image_failed"}}]
     if source:

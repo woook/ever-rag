@@ -21,13 +21,21 @@ def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
     if collection_name == "obsidian":
         m = re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(path))
         if m:
-            return m.group(0)
+            try:
+                datetime.strptime(m.group(0), "%Y-%m-%d")
+                return m.group(0)
+            except ValueError:
+                pass
     elif collection_name == "yarle" and text:
         for line in text.splitlines()[:15]:
             if line.startswith("Created at:"):
                 m = re.search(r'\d{4}-\d{2}-\d{2}', line)
                 if m:
-                    return m.group(0)
+                    try:
+                        datetime.strptime(m.group(0), "%Y-%m-%d")
+                        return m.group(0)
+                    except ValueError:
+                        pass
     try:
         return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
     except Exception:
