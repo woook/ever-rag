@@ -294,7 +294,7 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
         used_ocr = True
 
     fid = file_id(path)
-    note_date = extract_note_date(path, collection_name)
+    note_date = extract_note_date(path, collection_name, full_text)
     results = []
     for i, chunk in enumerate(chunks):
         meta = {

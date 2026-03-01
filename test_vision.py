@@ -13,6 +13,7 @@ Set API keys as environment variables before running:
 """
 
 import base64
+import os
 import sys
 
 import litellm
@@ -31,6 +32,10 @@ PROMPT = "Describe the content of this image in detail, including any text visib
 
 
 def test_image(img_path: str) -> None:
+    if not os.path.isfile(img_path):
+        print(f"ERROR: File not found: {img_path}")
+        return
+
     print(f"\n{'#'*70}")
     print(f"Image: {img_path}")
     print(f"{'#'*70}")

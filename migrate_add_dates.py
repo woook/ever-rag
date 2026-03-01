@@ -7,30 +7,11 @@ writes. Safe to re-run: chunks that already have note_date are skipped.
 """
 
 import os
-import re
-from datetime import datetime
 
 import chromadb
 
 from config import CHROMA_PERSIST_DIR, COLLECTION_NAME
-
-
-def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
-    """Extract note date as 'YYYY-MM-DD' (mirrors index.py logic)."""
-    if collection_name == "obsidian":
-        m = re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(path))
-        if m:
-            return m.group(0)
-    elif collection_name == "yarle" and text:
-        for line in text.splitlines()[:15]:
-            if line.startswith("Created at:"):
-                m = re.search(r'\d{4}-\d{2}-\d{2}', line)
-                if m:
-                    return m.group(0)
-    try:
-        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-    except Exception:
-        return "1970-01-01"
+from index import extract_note_date
 
 
 def main():
@@ -51,7 +32,7 @@ def main():
             limit=FETCH_BATCH,
             include=["metadatas"],
         )
-        for chunk_id, meta in zip(results["ids"], results["metadatas"]):
+        for chunk_id, meta in zip(results["ids"], results["metadatas"], strict=True):
             if "note_date" in meta:
                 already_have_date += 1
                 continue
@@ -71,8 +52,8 @@ def main():
                                 break
                             lines.append(line)
                         text = "".join(lines)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  WARN: could not read {path} for date extraction: {e}")
 
             note_date = extract_note_date(path, coll, text)
             new_meta = dict(meta)

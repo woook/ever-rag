@@ -55,7 +55,14 @@ def search_notes(
         content_type: Limit to file type — "md", "pdf", or "image". Omit for all.
         top_k: Number of chunks to return (default 5, max ~20).
         date_after: Only return notes on or after this ISO date, e.g. "2025-03-01".
+            Note: implemented as a post-filter over top_k*20 candidates — if most
+            chunks predate the cutoff you may receive fewer than top_k results.
     """
+    if source and source not in {"obsidian", "yarle"}:
+        return f"Invalid source '{source}'. Must be 'obsidian' or 'yarle'."
+    if content_type and content_type not in {"md", "pdf", "image"}:
+        return f"Invalid content_type '{content_type}'. Must be 'md', 'pdf', or 'image'."
+
     conditions = [{"source_type": {"$ne": "image_failed"}}]
     if source:
         conditions.append({"collection": source})
@@ -81,7 +88,7 @@ def search_notes(
     if date_after:
         filtered = [
             (d, m, dist)
-            for d, m, dist in zip(docs, metas, dists)
+            for d, m, dist in zip(docs, metas, dists, strict=True)
             if m.get("note_date", "") >= date_after
         ]
         docs, metas, dists = (
@@ -94,7 +101,7 @@ def search_notes(
         return "No matching notes found."
 
     parts = []
-    for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
+    for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists, strict=True), 1):
         collection = meta.get("collection", "unknown")
         stype = meta.get("source_type", "unknown")
         note_date = meta.get("note_date", "unknown")
