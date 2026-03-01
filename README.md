@@ -204,3 +204,13 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 |------------|------|---------|
 | yarle | `/home/wook/Documents/evern/yarle1` | ~1,715 Markdown files, ~263 PDFs, ~2,203 images |
 | obsidian | `/home/wook/Documents/obsidiangit` | ~600 Markdown files, ~20 PDFs, ~1,373 images |
+
+## Further Details
+
+See [technical_walkthrough.md](technical_walkthrough.md) for a deeper dive into the implementation, including:
+
+- Live-executed examples of the indexing pipeline, chunk ID design, and two-pass cloud vision
+- ChromaDB metadata schema with real chunk samples
+- MCP server internals and `search_notes` parameter reference
+- Note date extraction logic and migration script walkthrough
+- Dependency versions (verified at document build time via showboat)
