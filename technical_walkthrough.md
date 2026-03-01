@@ -3,7 +3,7 @@
 *2026-03-01T23:04:15Z by Showboat 0.6.1*
 <!-- showboat-id: 192c3921-1b26-419b-a2b7-b3afc8ed3732 -->
 
-Local RAG tool that indexes two personal note collections (Evernote/Yarle and Obsidian) into a ChromaDB vector database and answers natural-language queries using a locally-running Ollama LLM. Images go through a two-pass cloud vision pipeline (Gemini 2.5 Flash then Claude Sonnet via Bedrock). An MCP server exposes the index as a tool Claude can call directly from any conversation.
+Local RAG tool that indexes two personal note collections (Evernote/Yarle and Obsidian) into a ChromaDB vector database and answers natural-language queries using a locally running Ollama LLM. Images go through a two-pass cloud vision pipeline (Gemini 2.5 Flash, then Claude Sonnet via Bedrock). An MCP server exposes the index as a tool Claude can call directly from any conversation.
 
 ## Project Structure
 
@@ -260,7 +260,7 @@ def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
                         pass
     try:
         return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-    except Exception as e:
+    except (OSError, ValueError, OverflowError) as e:
         print(f"WARN: could not read mtime for {path}: {e} — using 1970-01-01", file=sys.stderr)
         return "1970-01-01"
 ```
@@ -660,9 +660,9 @@ print(f\"Total chunks: {col.count()}\")
 md = col.get(where={\"source_type\": \"md\"}, limit=1, include=[\"metadatas\"])
 print(\"Markdown chunk:\", md[\"metadatas\"][0])
 
-# Gemini image chunk (note_date set at index time)
+# Gemini failed-image sentinel (note_date set at index time)
 gem = col.get(where={\"vision_model\": \"gemini/gemini-2.5-flash\"}, limit=1, include=[\"metadatas\"])
-print(\"Gemini image chunk:\", gem[\"metadatas\"][0])
+print(\"Gemini failed-image sentinel:\", gem[\"metadatas\"][0])
 
 # Sonnet chunk
 son = col.get(where={\"vision_model\": \"bedrock/eu.anthropic.claude-sonnet-4-6\"}, limit=1, include=[\"metadatas\"])
@@ -673,7 +673,7 @@ print(\"Sonnet chunk:\", son[\"metadatas\"][0])
 ```output
 Total chunks: 201594
 Markdown chunk: {'source_type': 'md', 'source_file': '/home/wook/Documents/evern/yarle1/Mono- and biallelic variant effects on disease at biobank scale - Nature.md', 'note_date': '2023-01-19', 'collection': 'yarle', 'chunk_index': 0}
-Gemini image chunk: {'note_date': '2026-02-27', 'source_file': '/home/wook/Documents/obsidiangit/2026/attachments/Pasted image 20260227145020.png', 'source_type': 'image_failed', 'vision_model': 'gemini/gemini-2.5-flash', 'collection': 'obsidian', 'chunk_index': 0}
+Gemini failed-image sentinel: {'note_date': '2026-02-27', 'source_file': '/home/wook/Documents/obsidiangit/2026/attachments/Pasted image 20260227145020.png', 'source_type': 'image_failed', 'vision_model': 'gemini/gemini-2.5-flash', 'collection': 'obsidian', 'chunk_index': 0}
 Sonnet chunk: {'collection': 'obsidian', 'note_date': '2026-02-27', 'vision_model': 'bedrock/eu.anthropic.claude-sonnet-4-6', 'chunk_index': 0, 'source_file': '/home/wook/Documents/obsidiangit/2026/attachments/Pasted image 20260227144303.png', 'source_type': 'image'}
 ```
 

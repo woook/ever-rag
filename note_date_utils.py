@@ -39,6 +39,6 @@ def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
                         pass
     try:
         return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-    except Exception as e:
+    except (OSError, ValueError, OverflowError) as e:
         print(f"WARN: could not read mtime for {path}: {e} — using 1970-01-01", file=sys.stderr)
         return "1970-01-01"
