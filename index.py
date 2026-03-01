@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import time
+from datetime import datetime
 
 import chromadb
 import fitz  # PyMuPDF
@@ -62,6 +63,30 @@ def file_id(path: str, suffix: str = "") -> str:
     """Stable ID prefix for a file based on its path and optional suffix."""
     key = path + suffix
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
+def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
+    """Extract note date as 'YYYY-MM-DD'.
+
+    Priority:
+    1. Obsidian: date prefix in filename (e.g. "2026-02-27 Epic.md")
+    2. Yarle: 'Created at:' line in the first 15 lines of text
+    3. Fallback: file modification time
+    """
+    if collection_name == "obsidian":
+        m = re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(path))
+        if m:
+            return m.group(0)
+    elif collection_name == "yarle" and text:
+        for line in text.splitlines()[:15]:
+            if line.startswith("Created at:"):
+                m = re.search(r'\d{4}-\d{2}-\d{2}', line)
+                if m:
+                    return m.group(0)
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+    except Exception:
+        return "1970-01-01"
 
 
 def scan_files(source_dir: str, min_size_bytes: int = MIN_IMAGE_SIZE_BYTES,
@@ -198,6 +223,7 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
         print(f"  WARN: no text extracted from {path} (empty or fully stripped)")
         return []
     fid = file_id(path)
+    note_date = extract_note_date(path, collection_name, text)
     results = []
     for i, chunk in enumerate(chunks):
         results.append({
@@ -208,6 +234,7 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
                 "source_type": "md",
                 "collection": collection_name,
                 "chunk_index": i,
+                "note_date": note_date,
             },
         })
     return results
@@ -267,6 +294,7 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
         used_ocr = True
 
     fid = file_id(path)
+    note_date = extract_note_date(path, collection_name)
     results = []
     for i, chunk in enumerate(chunks):
         meta = {
@@ -274,6 +302,7 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
             "source_type": "pdf",
             "collection": collection_name,
             "chunk_index": i,
+            "note_date": note_date,
         }
         if used_ocr:
             meta["vision_model"] = vision_model
@@ -301,6 +330,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
 
         chunks = chunk_text(description)
         fid = file_id(path, suffix=f":{vision_model}")
+        note_date = extract_note_date(path, collection_name)
         results = []
         for i, chunk in enumerate(chunks):
             results.append({
@@ -312,6 +342,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                     "collection": collection_name,
                     "chunk_index": i,
                     "vision_model": vision_model,
+                    "note_date": note_date,
                 },
             })
         return results
@@ -321,6 +352,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
             raise  # propagate — outer loop will catch and stop the pass
         print(f"  WARN: image processing failed for {path}: {e}")
         fid = file_id(path, suffix=f":{vision_model}")
+        note_date = extract_note_date(path, collection_name)
         return [{
             "id": f"{fid}_0",
             "text": "[image processing failed]",
@@ -330,6 +362,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                 "collection": collection_name,
                 "chunk_index": 0,
                 "vision_model": vision_model,
+                "note_date": note_date,
             },
         }]
 
