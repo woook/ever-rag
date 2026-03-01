@@ -99,6 +99,53 @@ Indexing is **resumable** — stop anytime with Ctrl+C and re-run to continue. I
 | `--verify` | Audit indexed files against disk; no indexing performed |
 | `--fix` | Use with `--verify` to re-index any missing files |
 
+## MCP Server (Claude Code integration)
+
+`mcp_server.py` exposes the RAG index as a tool that Claude can call directly during conversations, without needing the web UI or CLI.
+
+### Setup
+
+```bash
+pip install fastmcp
+```
+
+Register with Claude Code (user scope — available in all projects):
+
+```bash
+claude mcp add --transport stdio personal-notes -- python3 /home/wook/Documents/ever/mcp_server.py
+```
+
+Or project-scoped (saves to `.mcp.json` in the repo):
+
+```bash
+claude mcp add --scope project --transport stdio personal-notes -- python3 /home/wook/Documents/ever/mcp_server.py
+```
+
+Verify it's registered:
+
+```bash
+claude mcp list
+```
+
+### Tool: `search_notes`
+
+Once registered, Claude can call `search_notes` during any conversation. Parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | string | Natural-language search query |
+| `source` | string (optional) | Limit to `"obsidian"` or `"yarle"` |
+| `content_type` | string (optional) | Limit to `"md"`, `"pdf"`, or `"image"` |
+| `top_k` | int (optional) | Number of chunks to return (default 5) |
+| `date_after` | string (optional) | ISO date filter, e.g. `"2025-03-01"` |
+
+Returns raw chunks with collection, file type, date, similarity score, and filename so Claude can synthesise an answer and cite specific notes.
+
+### Notes
+
+- The server loads the embedding model and ChromaDB index once at startup — first call may be slow.
+- Requires the index to be built first (`index.py`). If the collection doesn't exist, the server exits with an error.
+
 ## Search
 
 ### CLI
@@ -145,6 +192,11 @@ Features: search box, source/type/top-k filters, "chunks only" mode, similarity 
 - **Two-pass vision**: Pass 1 (Gemini 2.5 Flash) runs on all new images; Pass 2 (Claude Sonnet) runs only on images Pass 1 succeeded on. Each model produces separate chunks that coexist in the index.
 - **PDF OCR fallback**: if a PDF has no text layer, each page is rendered at 150 DPI and passed to the primary vision model; disabled by `--skip-images`
 - **Chunk IDs**: include the vision model name so multiple models can index the same image independently, and so re-runs skip already-indexed files
+- **Date metadata**: every chunk stores a `note_date` field (`YYYY-MM-DD`) extracted by priority:
+  1. Obsidian — date prefix in filename (e.g. `2026-02-27 Epic.md`)
+  2. Yarle — `Created at:` line in the first 15 lines of the file
+  3. Fallback — file modification time
+  This field enables date-range filtering in both the CLI (`search.py`) and the MCP `search_notes` tool (`date_after` parameter).
 
 ## Sources
 
