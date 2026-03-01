@@ -61,14 +61,15 @@ def search_notes(
         conditions.append({"collection": source})
     if content_type:
         conditions.append({"source_type": content_type})
-    if date_after:
-        conditions.append({"note_date": {"$gte": date_after}})
+    # note_date is stored as "YYYY-MM-DD" string; ChromaDB $gte only supports numbers,
+    # so we post-filter in Python (ISO date strings compare correctly lexicographically).
     where = conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
     embedding = _model.encode([query]).tolist()
+    fetch_k = top_k * 20 if date_after else top_k
     results = _collection.query(
         query_embeddings=embedding,
-        n_results=top_k,
+        n_results=fetch_k,
         include=["documents", "metadatas", "distances"],
         where=where,
     )
@@ -76,6 +77,18 @@ def search_notes(
     docs = results["documents"][0]
     metas = results["metadatas"][0]
     dists = results["distances"][0]
+
+    if date_after:
+        filtered = [
+            (d, m, dist)
+            for d, m, dist in zip(docs, metas, dists)
+            if m.get("note_date", "") >= date_after
+        ]
+        docs, metas, dists = (
+            [x[0] for x in filtered[:top_k]],
+            [x[1] for x in filtered[:top_k]],
+            [x[2] for x in filtered[:top_k]],
+        )
 
     if not docs:
         return "No matching notes found."
