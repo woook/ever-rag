@@ -228,6 +228,7 @@ index.py imports at the top level.
 
 import os
 import re
+import sys
 from datetime import datetime
 
 
@@ -259,7 +260,8 @@ def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
                         pass
     try:
         return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-    except Exception:
+    except Exception as e:
+        print(f"WARN: could not read mtime for {path}: {e} — using 1970-01-01", file=sys.stderr)
         return "1970-01-01"
 ```
 
@@ -641,7 +643,7 @@ First time here? Read the [high level summary](http://www.hl7.org/implement/stan
 **DS
 ```
 
-The top result is an image chunk (similarity 0.783) — its text description was embedded by a vision model and competes on equal footing with markdown chunks. The image was indexed by the legacy `glm-ocr` local model which predates the `note_date` field, so it lacks that metadata.
+The top result is an image chunk (similarity 0.783) — its text description was embedded by a vision model and competes on equal footing with markdown chunks. The image was indexed by the legacy `glm-ocr` local model; it now has `note_date` backfilled by `migrate_add_dates.py`, but lacks the `vision_model` field that was introduced with the cloud vision pipeline.
 
 ## ChromaDB Index
 
