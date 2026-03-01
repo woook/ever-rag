@@ -13,6 +13,8 @@ import fitz  # PyMuPDF
 import ollama
 from sentence_transformers import SentenceTransformer
 
+from note_date_utils import extract_note_date
+
 from config import (
     CHROMA_PERSIST_DIR,
     CHUNK_OVERLAP,
@@ -198,6 +200,7 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
         print(f"  WARN: no text extracted from {path} (empty or fully stripped)")
         return []
     fid = file_id(path)
+    note_date = extract_note_date(path, collection_name, text)
     results = []
     for i, chunk in enumerate(chunks):
         results.append({
@@ -208,6 +211,7 @@ def process_markdown(path: str, collection_name: str) -> list[dict]:
                 "source_type": "md",
                 "collection": collection_name,
                 "chunk_index": i,
+                "note_date": note_date,
             },
         })
     return results
@@ -267,6 +271,7 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
         used_ocr = True
 
     fid = file_id(path)
+    note_date = extract_note_date(path, collection_name, full_text)
     results = []
     for i, chunk in enumerate(chunks):
         meta = {
@@ -274,6 +279,7 @@ def process_pdf(path: str, collection_name: str, vision_model: str | None = None
             "source_type": "pdf",
             "collection": collection_name,
             "chunk_index": i,
+            "note_date": note_date,
         }
         if used_ocr:
             meta["vision_model"] = vision_model
@@ -301,6 +307,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
 
         chunks = chunk_text(description)
         fid = file_id(path, suffix=f":{vision_model}")
+        note_date = extract_note_date(path, collection_name)
         results = []
         for i, chunk in enumerate(chunks):
             results.append({
@@ -312,6 +319,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                     "collection": collection_name,
                     "chunk_index": i,
                     "vision_model": vision_model,
+                    "note_date": note_date,
                 },
             })
         return results
@@ -321,6 +329,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
             raise  # propagate — outer loop will catch and stop the pass
         print(f"  WARN: image processing failed for {path}: {e}")
         fid = file_id(path, suffix=f":{vision_model}")
+        note_date = extract_note_date(path, collection_name)
         return [{
             "id": f"{fid}_0",
             "text": "[image processing failed]",
@@ -330,6 +339,7 @@ def process_image(path: str, collection_name: str, vision_model: str) -> list[di
                 "collection": collection_name,
                 "chunk_index": 0,
                 "vision_model": vision_model,
+                "note_date": note_date,
             },
         }]
 
