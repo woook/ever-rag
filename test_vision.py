@@ -31,7 +31,7 @@ MODELS = [
 PROMPT = "Describe the content of this image in detail, including any text visible."
 
 
-def test_image(img_path: str) -> None:
+def run_image_check(img_path: str) -> None:
     if not os.path.isfile(img_path):
         print(f"ERROR: File not found: {img_path}")
         return
@@ -70,4 +70,4 @@ if __name__ == "__main__":
         print("Usage: python3 test_vision.py <image> [image2 ...]")
         sys.exit(1)
     for path in sys.argv[1:]:
-        test_image(path)
+        run_image_check(path)

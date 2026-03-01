@@ -6,6 +6,7 @@ Returns raw chunks with metadata so Claude can synthesise the answer.
 """
 
 import os
+import re
 import sys
 
 import chromadb
@@ -62,6 +63,11 @@ def search_notes(
         return f"Invalid source '{source}'. Must be 'obsidian' or 'yarle'."
     if content_type and content_type not in {"md", "pdf", "image"}:
         return f"Invalid content_type '{content_type}'. Must be 'md', 'pdf', or 'image'."
+    if top_k < 1:
+        return "top_k must be at least 1."
+    top_k = min(top_k, 100)
+    if date_after and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_after):
+        return f"Invalid date_after '{date_after}'. Must be ISO format YYYY-MM-DD."
 
     conditions = [{"source_type": {"$ne": "image_failed"}}]
     if source:

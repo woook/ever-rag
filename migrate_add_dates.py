@@ -11,7 +11,7 @@ import os
 import chromadb
 
 from config import CHROMA_PERSIST_DIR, COLLECTION_NAME
-from index import extract_note_date
+from note_date_utils import extract_note_date
 
 
 def main():
@@ -33,6 +33,9 @@ def main():
             include=["metadatas"],
         )
         for chunk_id, meta in zip(results["ids"], results["metadatas"], strict=True):
+            if not isinstance(meta, dict):
+                print(f"  WARN: skipping chunk {chunk_id} — unexpected metadata type: {type(meta)}")
+                continue
             if "note_date" in meta:
                 already_have_date += 1
                 continue

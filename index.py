@@ -7,12 +7,13 @@ import hashlib
 import os
 import re
 import time
-from datetime import datetime
 
 import chromadb
 import fitz  # PyMuPDF
 import ollama
 from sentence_transformers import SentenceTransformer
+
+from note_date_utils import extract_note_date
 
 from config import (
     CHROMA_PERSIST_DIR,
@@ -63,30 +64,6 @@ def file_id(path: str, suffix: str = "") -> str:
     """Stable ID prefix for a file based on its path and optional suffix."""
     key = path + suffix
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()[:12]
-
-
-def extract_note_date(path: str, collection_name: str, text: str = "") -> str:
-    """Extract note date as 'YYYY-MM-DD'.
-
-    Priority:
-    1. Obsidian: date prefix in filename (e.g. "2026-02-27 Epic.md")
-    2. Yarle: 'Created at:' line in the first 15 lines of text
-    3. Fallback: file modification time
-    """
-    if collection_name == "obsidian":
-        m = re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(path))
-        if m:
-            return m.group(0)
-    elif collection_name == "yarle" and text:
-        for line in text.splitlines()[:15]:
-            if line.startswith("Created at:"):
-                m = re.search(r'\d{4}-\d{2}-\d{2}', line)
-                if m:
-                    return m.group(0)
-    try:
-        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-    except Exception:
-        return "1970-01-01"
 
 
 def scan_files(source_dir: str, min_size_bytes: int = MIN_IMAGE_SIZE_BYTES,
