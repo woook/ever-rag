@@ -23,18 +23,25 @@ from config import CHROMA_PERSIST_DIR, COLLECTION_NAME, EMBEDDING_MODEL
 
 mcp = FastMCP("personal-notes")
 
-# Load once at module level — these are reused across all tool calls
-print("Loading embedding model...", file=sys.stderr, flush=True)
-_model = SentenceTransformer(EMBEDDING_MODEL)
+# Lazily initialised on first tool call so the server starts instantly.
+_model = None
+_collection = None
 
-_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-try:
-    _collection = _client.get_collection(COLLECTION_NAME)
-    print(f"Index loaded: {_collection.count()} chunks", file=sys.stderr, flush=True)
-except Exception as e:
-    print(f"ERROR: Could not load ChromaDB collection: {e}", file=sys.stderr)
-    print("Run index.py first to build the index.", file=sys.stderr)
-    sys.exit(1)
+
+def _get_resources():
+    global _model, _collection
+    if _model is None:
+        print("Loading embedding model...", file=sys.stderr, flush=True)
+        _model = SentenceTransformer(EMBEDDING_MODEL)
+    if _collection is None:
+        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        try:
+            _collection = client.get_collection(COLLECTION_NAME)
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not load ChromaDB collection: {e}. Run index.py first."
+            ) from e
+    return _model, _collection
 
 
 @mcp.tool()
@@ -81,9 +88,10 @@ def search_notes(
     # so we post-filter in Python (ISO date strings compare correctly lexicographically).
     where = conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
-    embedding = _model.encode([query]).tolist()
+    model, collection = _get_resources()
+    embedding = model.encode([query]).tolist()
     fetch_k = top_k * 20 if date_after else top_k
-    results = _collection.query(
+    results = collection.query(
         query_embeddings=embedding,
         n_results=fetch_k,
         include=["documents", "metadatas", "distances"],
